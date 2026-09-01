@@ -622,8 +622,14 @@ def _code(text):
 
 
 def _fence_safe(text, limit=1200):
-    """Trim a captured message and stop it closing the fence it sits in."""
-    text = _defang(text)
+    """Trim a captured message and stop it closing anything it sits in.
+
+    A fence, and the <details> block around it. The fence content should be
+    literal text to any markdown renderer, but a failure that silently
+    collapses the rest of the summary is a poor trade against a zero-width
+    space in the middle of a traceback nobody was reading closely.
+    """
+    text = _defang(text).replace("</details", "</\u200bdetails")
     if len(text) > limit:
         text = text[:limit] + "\n... trimmed, the full message is in the report."
 
@@ -741,7 +747,16 @@ def supported(help_text):
     if not help_text:
         return None
 
-    return set(re.findall(r"--[a-z0-9][a-z0-9-]*", help_text))
+    options = set(re.findall(r"--[a-z0-9][a-z0-9-]*", help_text))
+
+    # A probe that did not actually list the plugin's options - pytest is
+    # missing, the plugin failed to load, --help errored - would otherwise
+    # read as "this plugin supports nothing" and drop every flag. The core
+    # flag is the evidence that the listing is real.
+    if "--html-report" not in options:
+        return None
+
+    return options
 
 
 def build_args(env, report_path, help_text=None):

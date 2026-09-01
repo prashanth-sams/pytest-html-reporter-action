@@ -129,6 +129,18 @@ folder. The action warns when it detects this.
 Percent signs are `strftime` placeholders: `%p` is AM/PM, so `./100%pass/`
 becomes `./100PMass/`. Write `%%` for a literal percent.
 
+## `pip` refuses to install anything
+
+`error: externally-managed-environment`. The runner's Python belongs to its
+distribution, and pip will not touch it. This does not happen on GitHub-hosted
+runners; on a self-hosted one, set `python-version` so `actions/setup-python`
+provides an interpreter of its own:
+
+```yaml
+with:
+  python-version: '3.12'
+```
+
 ## Something else
 
 Open an issue with the workflow YAML, the job log, and the `report-dir` and

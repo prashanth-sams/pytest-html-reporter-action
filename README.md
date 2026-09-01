@@ -399,6 +399,12 @@ which skips every check and hands the report to a console browser. The action
 passes `--report-open=none` so that cannot happen; set `report-open` yourself
 if you have a self-hosted runner with a desktop.
 
+**Reading the outputs of a red run.** When the action fails the job, the step
+that used it has failed, and a later step needs `if: always()` to run at all.
+The tidier way round is `fail-on-error: 'false'` and your own decision, as in
+[Use the outputs](#use-the-outputs) above — then nothing has failed and the
+outputs are simply there.
+
 **Running after a failed step.** The action has no post-run hook. If an earlier
 step in your job can fail and you still want the report, put `if: always()` on
 the step that uses this action.

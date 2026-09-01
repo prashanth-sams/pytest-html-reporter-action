@@ -657,6 +657,16 @@ def test_nothing_is_filtered_when_the_probe_failed():
     assert "--report-steps=failed" in args
 
 
+def test_a_probe_that_did_not_list_the_plugin_filters_nothing():
+    # `pytest --help` failing leaves an error message, not an empty file, and
+    # reading that as "supports nothing" would drop every flag.
+    noise = "/usr/bin/python: No module named pytest\n"
+
+    assert phr.supported(noise) is None
+    assert "--report-steps=failed" in phr.build_args(
+        {"PHR_REPORT_STEPS": "failed"}, "report", noise)
+
+
 def test_a_repeated_flag_is_dropped_as_a_whole(capsys):
     args = phr.build_args({"PHR_BUILD_INFO": "a=1\nb=2"}, "report", HELP)
 
@@ -775,3 +785,61 @@ def test_a_comment_body_is_trimmed_harder_than_the_summary(tmp_path):
     phr.cmd_summarize(Options())
 
     assert len(body.read_text(encoding="utf-8")) <= phr.COMMENT_LIMIT + 200
+
+
+# ---------------------------------------------------------------------------
+# shapes output.json should never hold, and sometimes does
+# ---------------------------------------------------------------------------
+
+HOSTILE = {
+    "suites as a list": {
+        "content": {"suites": [{"suite_name": "s", "tests": {}, "status": {}}]},
+        "status": "PASS", "status_list": {"pass": "1"}},
+    "nulls everywhere": {
+        "content": {"suites": {"0": {"suite_name": None, "tests": None, "status": None}}},
+        "status": None, "status_list": None, "total_suite": None, "coverage": None},
+    "counts as ints": {
+        "status_list": {"pass": 3, "fail": 1}, "status": "FAIL", "total_suite": 1,
+        "content": {"suites": {}}},
+    "coverage as a string": {
+        "status": "PASS", "status_list": {"pass": "1"}, "coverage": "87%"},
+    "empty document": {},
+    "no content key": {"status": "PASS", "status_list": {"pass": "2"}, "total_suite": 3},
+    "a workflow command in a name": {
+        "status": "FAIL", "status_list": {"fail": "1"}, "total_suite": 1,
+        "content": {"suites": {"0": {
+            "suite_name": "::set-env name=X::y", "status": {"total_fail": 1},
+            "tests": {"0": {"status": "FAIL", "test_name": "::add-path::/tmp",
+                            "message": "::error::hi\n::warning::there",
+                            "rerun": "0", "duration": 1.0}}}}}},
+    "markup in a message": {
+        "status": "FAIL", "status_list": {"fail": "1"}, "total_suite": 1,
+        "content": {"suites": {"0": {
+            "suite_name": "<script>alert(1)</script>", "status": {"total_fail": 1},
+            "tests": {"0": {"status": "FAIL", "test_name": "</details><h1>x",
+                            "message": "```\n</details>", "rerun": "0",
+                            "duration": 0.0}}}}}},
+}
+
+
+@pytest.mark.parametrize("name", sorted(HOSTILE))
+def test_a_malformed_or_hostile_report_still_renders(name):
+    run = phr.Run(HOSTILE[name])
+
+    markdown = phr.render(run, {"title": "t", "wall_clock": 1})
+
+    assert markdown.count("<details>") == markdown.count("</details>"), (
+        "the collapsible blocks do not balance")
+
+    for line in markdown.splitlines():
+        assert not line.lstrip().startswith("::"), (
+            "a line of the summary reads as a workflow command: %r" % line)
+
+
+@pytest.mark.parametrize("name", sorted(HOSTILE))
+def test_a_malformed_or_hostile_report_still_gates(name):
+    ok, reasons = phr.gate(phr.Run(HOSTILE[name]), 1,
+                           Options(min_pass_rate="50", min_coverage="50"))
+
+    assert ok in (True, False)
+    assert all(isinstance(reason, str) for reason in reasons)

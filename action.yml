@@ -348,10 +348,8 @@ runs:
   using: composite
   steps:
     - name: Check the inputs
-      id: check
       shell: bash
       env:
-        PHR_ACTION_PATH: ${{ github.action_path }}
         PHR_REPORT_LOGS: ${{ inputs.report-logs }}
         PHR_REPORT_ATTACHMENTS: ${{ inputs.report-attachments }}
         PHR_REPORT_STEPS: ${{ inputs.report-steps }}
@@ -363,7 +361,6 @@ runs:
         PHR_REPORT_ATTACHMENT_LIMIT: ${{ inputs.report-attachment-limit }}
         PHR_REPORT_STEP_LIMIT: ${{ inputs.report-step-limit }}
         PHR_REPORT_COVERAGE_LIMIT: ${{ inputs.report-coverage-limit }}
-        PHR_REPORT_COVERAGE_FILE: ${{ inputs.report-coverage-file }}
       run: |
         set -euo pipefail
 
@@ -389,10 +386,8 @@ runs:
           local name="$1" value="$2"
           [ -z "$value" ] && return 0
           case "$value" in
-            ''|*[!0-9-]*) fail "$name must be a whole number - got '$value'" ;;
-          esac
-          case "$value" in
             -*) fail "$name cannot be negative. The plugin reads a negative limit as 0, and 0 means no limit at all - which is the opposite of what '$value' looks like it asks for." ;;
+            *[!0-9]*) fail "$name must be a whole number - got '$value'" ;;
           esac
         }
 
@@ -402,7 +397,6 @@ runs:
         limit report-coverage-limit   "$PHR_REPORT_COVERAGE_LIMIT"
 
         [ -d "$PHR_WORKING_DIRECTORY" ] || fail "working-directory '$PHR_WORKING_DIRECTORY' does not exist"
-
 
     - name: Set up Python
       if: inputs.python-version != ''
@@ -442,7 +436,11 @@ runs:
       run: |
         set -euo pipefail
 
-        "$PHR_PYTHON" -m pip install --upgrade pip >/dev/null
+        # Best-effort: a runner whose Python is managed by its distribution
+        # refuses to touch pip, and that is no reason to fail the job before
+        # the tests have had a chance to run.
+        "$PHR_PYTHON" -m pip install --upgrade pip >/dev/null 2>&1 \
+          || echo "pip could not be upgraded; carrying on with the one installed"
 
         if [ -n "$PHR_REQUIREMENTS" ]; then
           echo "::group::pip install -r $PHR_REQUIREMENTS"
