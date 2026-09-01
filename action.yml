@@ -1,3 +1,8 @@
+# The Marketplace lists an action under this name, not under its repository
+# name, and its listing URL is built from it - so this is the string somebody
+# searching for the plugin will find, and it stays exactly the plugin's name.
+# The repository is called ...-action only because the plugin already owns
+# the shorter name. tests/test_action_yml.py holds this to it.
 name: pytest-html-reporter
 description: >-
   Run pytest with pytest-html-reporter and publish the report - a job summary,

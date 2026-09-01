@@ -96,6 +96,12 @@ def test_the_branding_is_one_the_marketplace_takes(action):
 
 
 def test_the_action_is_named_for_the_plugin(action):
+    """The name the Marketplace lists, and the one people search for.
+
+    It comes from here rather than from the repository name, which is why
+    the repository can be ...-action - the plugin already owns the shorter
+    name - while the listing is simply the plugin's name.
+    """
     assert action["name"] == "pytest-html-reporter"
 
 

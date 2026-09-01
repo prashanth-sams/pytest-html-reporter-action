@@ -1,5 +1,11 @@
 # Releasing
 
+The Marketplace lists this action as **pytest-html-reporter** — that name comes
+from `name:` in `action.yml`, not from the repository, and the listing lives at
+`github.com/marketplace/actions/pytest-html-reporter`. Leave it alone: renaming
+it breaks the listing URL and every link to it. `tests/test_action_yml.py`
+fails the build if it changes.
+
 1. Update `CHANGELOG.md`.
 2. Tag and push:
 

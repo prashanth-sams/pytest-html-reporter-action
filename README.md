@@ -25,6 +25,12 @@ whatever you want to do next.
     tests: tests/
 ```
 
+> On the Marketplace this is listed as **pytest-html-reporter**. The
+> repository carries the `-action` suffix only because
+> [the plugin](https://github.com/prashanth-sams/pytest-html-reporter) already
+> has the shorter name — that suffix appears in the `uses:` line and nowhere
+> else.
+
 <br>
 
 ## Contents
