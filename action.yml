@@ -10,6 +10,10 @@ description: >-
   pass-rate or coverage gates.
 author: Prashanth Sams
 
+# A name from the Feather icon set and one of eight colours - not a file.
+# GitHub draws the glyph itself, so an image in the repository cannot be the
+# Marketplace icon however much it wants to be. A logo belongs in the README,
+# which is what the listing page actually renders.
 branding:
   icon: bar-chart-2
   color: purple
