@@ -1,0 +1,83 @@
+# A live report at
+# https://prashanth-sams.github.io/pytest-html-reporter-action/, so the Pages
+# path is something you can open rather than something the README claims
+# works. It runs the action against the same sample project the self-test
+# builds, which also makes this the only place `pages-artifact` is exercised
+# end to end.
+#
+# Pages has to be told to deploy from Actions before the deploy job can work:
+# Settings -> Pages -> Build and deployment -> Source: GitHub Actions. Until
+# that is set the job fails with "Get Pages site failed".
+name: demo
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Pages takes one deployment at a time. A queued demo is worth waiting for
+# rather than cancelling - the newest push should win, not the fastest.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  report:
+    name: build the report
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # The failing flavour: three passes, a failure, an error and a skip. A
+      # demo that is green all the way down says nothing about what the report
+      # does with the runs people actually need to read.
+      - name: Build the sample project
+        run: bash tests/fixtures/make-project.sh sample fail
+
+      - uses: ./
+        with:
+          python-version: '3.12'
+          working-directory: sample
+          tests: tests/
+          title: pytest-html-reporter
+          summary-title: demo run
+          environment: github-actions
+          build-info: |
+            repository=${{ github.repository }}
+            commit=${{ github.sha }}
+          extra-packages: pytest-cov
+          pytest-args: --cov=src
+          # Pages serves index.html at the root of the site, and the report is
+          # a single page - so name it that and the site needs no landing page.
+          report-path: report/index.html
+          pages-artifact: 'true'
+          # Each push archives the run before it, so the trend on the live
+          # report fills in over time instead of always showing one build.
+          history: 'true'
+          artifact-name: demo-report
+          report-url: https://prashanth-sams.github.io/pytest-html-reporter-action/
+          # The sample fails on purpose. Failing this job over it would stop
+          # the deploy and leave the live report showing an older run.
+          fail-on-error: 'false'
+
+  deploy:
+    name: publish to Pages
+    needs: report
+    runs-on: ubuntu-latest
+
+    # The deploy needs an environment and permissions of its own, which is
+    # exactly why the action cannot do this part for you.
+    permissions:
+      pages: write
+      id-token: write
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+
+    steps:
+      - uses: actions/deploy-pages@v5
+        id: deploy
