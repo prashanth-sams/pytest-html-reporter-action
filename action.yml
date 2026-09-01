@@ -507,7 +507,7 @@ runs:
     # archive itself. Carrying only archive/ accumulates nothing at all.
     - name: Restore build history
       if: inputs.history == 'true'
-      uses: actions/cache/restore@v4
+      uses: actions/cache/restore@v6
       with:
         path: |
           ${{ steps.resolve.outputs.archive-dir }}
@@ -610,7 +610,7 @@ runs:
 
     - name: Save build history
       if: inputs.history == 'true'
-      uses: actions/cache/save@v4
+      uses: actions/cache/save@v6
       with:
         path: |
           ${{ steps.resolve.outputs.archive-dir }}
