@@ -1,7 +1,10 @@
 # The second half of fork-pr.yml. Save this as its own workflow file.
 #
 # `workflow_run` runs from your default branch with your permissions, and
-# never checks out the fork's code. It only reads two text files.
+# never checks out the fork's code. It reads two small text files, and it
+# checks that the pull request they name is really the one that produced
+# them - an artifact comes out of a job that ran the fork's tests, so it is
+# not on its own evidence of anything.
 name: tests comment
 
 on:
@@ -31,21 +34,45 @@ jobs:
             const fs = require('fs');
 
             const marker = '<!-- pytest-html-reporter-action -->';
-            const issue_number = Number(fs.readFileSync('comment/pr-number', 'utf8').trim());
-            const body = marker + '\n' + fs.readFileSync('comment/body.md', 'utf8');
+            const run = context.payload.workflow_run;
 
-            if (!Number.isInteger(issue_number) || issue_number <= 0) {
+            const claimed = Number(fs.readFileSync('comment/pr-number', 'utf8').trim());
+
+            if (!Number.isInteger(claimed) || claimed <= 0) {
               core.setFailed('the artifact did not carry a usable pull request number');
               return;
             }
 
+            // The artifact was produced by a job running the fork's code, so
+            // the number in it is a claim rather than a fact. A pull request
+            // whose head is the commit this run tested is the one thing that
+            // cannot be forged from inside that job.
+            const { data: pull } = await github.rest.pulls.get({
+              ...context.repo, pull_number: claimed,
+            });
+
+            if (pull.head.sha !== run.head_sha) {
+              core.setFailed(
+                `pull request #${claimed} is at ${pull.head.sha}, but this run ` +
+                `tested ${run.head_sha}. Refusing to comment on a pull request ` +
+                `the artifact only claims to belong to.`);
+              return;
+            }
+
+            const body = marker + '\n'
+              + fs.readFileSync('comment/body.md', 'utf8').slice(0, 60000);
+
             const existing = await github.paginate(github.rest.issues.listComments, {
-              ...context.repo, issue_number, per_page: 100,
+              ...context.repo, issue_number: claimed, per_page: 100,
             });
             const mine = existing.find((comment) => comment.body?.includes(marker));
 
             if (mine) {
-              await github.rest.issues.updateComment({ ...context.repo, comment_id: mine.id, body });
+              await github.rest.issues.updateComment({
+                ...context.repo, comment_id: mine.id, body,
+              });
             } else {
-              await github.rest.issues.createComment({ ...context.repo, issue_number, body });
+              await github.rest.issues.createComment({
+                ...context.repo, issue_number: claimed, body,
+              });
             }

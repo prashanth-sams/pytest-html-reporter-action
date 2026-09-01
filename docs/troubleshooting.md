@@ -24,10 +24,12 @@ where you are looking.
 
 pytest refused an argument. This is not a failing test — nothing ran.
 
-The message pytest printed names a **flag**, and you set an **input**. They
-match one for one: `--archive-since` is the `archive-since` input. But the same
-message appears when the value came from your `pytest.ini`, because the ini
-keys share their names with the flags. So check both.
+The message pytest printed names a **flag**, and you set an **input**. Nearly
+all of them share a name — `--archive-since` is the `archive-since` input — with
+two that do not: `--html-report` is `report-path`, and `--report-link` is
+`report-links`. The same message also appears when the value came from your
+`pytest.ini`, because the ini keys share their names with the flags too. So
+check both.
 
 The action quotes the offending line back as an annotation, so you should not
 have to go digging in the log for it.
@@ -69,7 +71,7 @@ Then check three things:
 
 Note that the first run with history on still shows one build. It takes two.
 
-## The Coverage tab is empty
+## The Test Coverage tab is empty
 
 The plugin reads whatever measured coverage; it does not measure any itself.
 

@@ -22,7 +22,10 @@ import yaml
 
 # GitHub substitutes these before bash ever sees them. A quoted placeholder
 # keeps the line syntactically what it will be at run time.
-EXPRESSION = re.compile(r"\$\{\{[^}]*\}\}")
+# Non-greedy to the closing braces rather than "anything but a brace": an
+# expression holding one - format('{0}/archive', ...) - would otherwise be
+# cut in half and leave the tail of it in the script being linted.
+EXPRESSION = re.compile(r"\$\{\{.*?\}\}", re.DOTALL)
 
 # The step name goes after "step:" rather than straight after the "#": a step
 # called "shellcheck the run blocks" would otherwise be read as a malformed

@@ -21,6 +21,10 @@ import sys
 
 __version__ = "1.0.0"
 
+
+class Unusable(Exception):
+    """An input this action cannot act on. Reported, not traced."""
+
 # Written by the plugin next to the report; the action never guesses at it.
 JSON_NAME = "output.json"
 ARCHIVE_DIR = "archive"
@@ -115,6 +119,19 @@ def normalise(path):
     return path
 
 
+def reescape(path):
+    """`path` written so the plugin's own expansion returns it unchanged.
+
+    The action expands the placeholders once, up front, so that it and the
+    plugin cannot disagree about where the report went. But the plugin
+    expands whatever it is given, and a percent that survived the first pass
+    - the one in "100%%pass" - would be read as a directive on the second.
+    Doubling every remaining percent makes that second pass give this string
+    back, because %% is how the plugin spells a literal one.
+    """
+    return path.replace("%", "%%")
+
+
 def resolve_report(path):
     """(report_dir, report_filename) for a --html-report value.
 
@@ -175,7 +192,16 @@ def trim(markdown, limit, where):
     tail = ("\n\n_Trimmed to fit %s. The full report is in the artifact._\n" % where)
     room = limit - len(tail.encode("utf-8"))
 
-    return markdown.encode("utf-8")[:room].decode("utf-8", "ignore") + tail
+    cut = markdown.encode("utf-8")[:room].decode("utf-8", "ignore")
+
+    # Cutting mid-block would leave a fence or a <details> that nothing
+    # closes, and everything after it folded away. Close what is open.
+    if cut.count("```") % 2:
+        cut += "\n```"
+
+    cut += "\n</details>" * (cut.count("<details>") - cut.count("</details>"))
+
+    return cut + tail
 
 
 def write_summary(markdown):
@@ -221,10 +247,39 @@ class Run(object):
         self.found = data is not None
 
     @classmethod
-    def load(cls, json_path):
+    def load(cls, json_path, previous=None):
+        """The build at `json_path`, unless it is the one `previous` names.
+
+        With history on, a restored cache puts the last build's output.json
+        in place before pytest runs. If this run then writes none of its own
+        - it crashed, it collected nothing - what is left on disk is the
+        previous build, and summarising that would report somebody else's
+        passes as this run's.
+        """
+        run = cls._read(json_path)
+
+        if run.found and previous and str(run.data.get("start_time")) == str(previous):
+            warn("the report at %s is the one restored from the build history, "
+                 "not one this run wrote. Reporting it as this run's result "
+                 "would be a lie, so it is being read as no report at all."
+                 % json_path)
+            return cls(None, json_path)
+
+        return run
+
+    @classmethod
+    def _read(cls, json_path):
         try:
             with open(json_path, encoding="utf-8") as handle:
-                return cls(json.load(handle), json_path)
+                data = json.load(handle)
+
+            if not isinstance(data, dict):
+                warn("%s holds %s where the report should be, so it is being "
+                     "read as no report at all."
+                     % (json_path, type(data).__name__))
+                return cls(None, json_path)
+
+            return cls(data, json_path)
         except (IOError, OSError):
             return cls(None, json_path)
         except ValueError as error:
@@ -274,7 +329,7 @@ class Run(object):
         if decisive == 0:
             return None
 
-        return round(100.0 * counts["pass"] / decisive, 2)
+        return 100.0 * counts["pass"] / decisive
 
     @property
     def coverage(self):
@@ -286,7 +341,7 @@ class Run(object):
         """Summed test durations. Wall clock is measured by the action itself."""
         total = 0.0
         for suite in self._suites():
-            for test in (suite.get("tests") or {}).values():
+            for test in _tests_of(suite):
                 total += _float(test.get("duration"))
 
         return round(total, 2)
@@ -320,10 +375,7 @@ class Run(object):
         out = []
         for suite in self._suites():
             name = str(suite.get("suite_name") or "unnamed")
-            tests = suite.get("tests") or {}
-            keys = sorted(tests, key=_sort_key) if isinstance(tests, dict) else range(len(tests))
-            for key in keys:
-                test = tests[key]
+            for test in _tests_of(suite):
                 status = str(test.get("status") or "").upper()
                 if status in ("FAIL", "ERROR"):
                     out.append({
@@ -341,7 +393,7 @@ class Run(object):
         tests = []
         for suite in self._suites():
             name = str(suite.get("suite_name") or "unnamed")
-            for test in (suite.get("tests") or {}).values():
+            for test in _tests_of(suite):
                 # A skipped test's duration is the cost of deciding to skip
                 # it, which is nobody's idea of a slow test.
                 if str(test.get("status") or "").upper() == "SKIP":
@@ -355,6 +407,22 @@ class Run(object):
 
         tests.sort(key=lambda item: item["duration"], reverse=True)
         return [test for test in tests[:limit] if test["duration"] > 0]
+
+
+def _tests_of(suite):
+    """A suite's tests, in report order, whichever shape they arrived in.
+
+    The plugin writes a dict keyed by a stringified index. Anything that has
+    been through a tool of its own may hand back a list instead, and one
+    reader coping with that while another raises is worse than either.
+    """
+    tests = (suite or {}).get("tests") or {}
+
+    if isinstance(tests, dict):
+        return [tests[key] for key in sorted(tests, key=_sort_key)
+                if isinstance(tests[key], dict)]
+
+    return [test for test in tests if isinstance(test, dict)]
 
 
 def _int(value):
@@ -412,15 +480,15 @@ def render(run, context):
 
     failures = run.failures()
     if failures:
-        lines.append(_failures(failures, context.get("failure_limit", 10)))
+        lines.append(_failures(failures, _limit(context.get("failure_limit"), 10)))
         lines.append("")
 
     rows = run.suite_rows()
     if len(rows) > 1:
-        lines.append(_suites_table(rows, context.get("suite_limit", 20)))
+        lines.append(_suites_table(rows, _limit(context.get("suite_limit"), 20)))
         lines.append("")
 
-    slowest = run.slowest(context.get("slowest_limit", 5))
+    slowest = run.slowest(_limit(context.get("slowest_limit"), 5))
     if slowest:
         lines.append(_slowest(slowest))
         lines.append("")
@@ -449,7 +517,7 @@ def _headline(run, context):
 
     rate = run.pass_rate
     if rate is not None:
-        parts.append("pass rate %s%%" % _trim(rate))
+        parts.append("pass rate %s%%" % _trim(round(rate, 2)))
 
     if counts["rerun"]:
         parts.append("%s %s" % (counts["rerun"], _plural(counts["rerun"], "rerun")))
@@ -483,18 +551,17 @@ def _coverage_line(run):
 
 
 def _failures(failures, limit):
-    limit = max(0, int(limit or 0)) or len(failures)
     lines = ["### Failures"]
 
     for failure in failures[:limit]:
-        heading = _defang("%s › %s" % (failure["suite"], failure["test"]))
+        heading = "%s › %s" % (_summary(failure["suite"]), _summary(failure["test"]))
         if failure["status"] == "ERROR":
             heading = "\U0001f6a8 " + heading
         if failure["rerun"]:
             heading += " (rerun %s×)" % failure["rerun"]
 
         lines.append("")
-        lines.append("<details><summary>%s</summary>" % _escape(heading))
+        lines.append("<details><summary>%s</summary>" % heading)
         lines.append("")
         lines.append("```text")
         lines.append(_fence_safe(failure["message"] or "No message was captured."))
@@ -512,7 +579,6 @@ def _failures(failures, limit):
 
 
 def _suites_table(rows, limit):
-    limit = max(0, int(limit or 0)) or len(rows)
     ordered = sorted(rows, key=lambda row: (
         -(row["counts"]["fail"] + row["counts"]["error"]), row["name"]))
 
@@ -564,6 +630,17 @@ def _links(context):
 
 # -- small text helpers -----------------------------------------------------
 
+def _limit(value, fallback):
+    """How many to list. 0 lists none; an unset input takes the default."""
+    if value is None or str(value).strip() == "":
+        return fallback
+
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return fallback
+
+
 def _plural(count, word):
     return word if count == 1 else word + "s"
 
@@ -587,13 +664,45 @@ def _seconds(value):
 
 
 def _escape(text):
-    return text.replace("<", "&lt;").replace(">", "&gt;")
+    return str(text).replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _name(text, in_table=False):
+    """A test or suite name, safe wherever this summary puts one.
+
+    Everything here is written by the tests, and on a fork's pull request the
+    tests are the fork author's, so a name gets three escapes:
+
+    HTML, because the failures sit inside a <details> block and a name of
+    "</details>" would close it and take the rest of the summary with it.
+
+    Markdown, because "[Security notice](http://evil)" must not become a link
+    in a comment posted under the repository's own identity. An <code>
+    element with the angle brackets already gone is the one rendering of a
+    name that is only ever the name.
+
+    And the pipe, in a table, because GFM ends a cell at an unescaped one
+    however deeply it is nested.
+    """
+    escaped = _defang(str(text)).replace("&", "&amp;")
+    escaped = escaped.replace("<", "&lt;").replace(">", "&gt;")
+    escaped = escaped.replace("[", "&#91;").replace("]", "&#93;")
+    escaped = escaped.replace("\n", " ").replace("\r", " ")
+
+    if in_table:
+        escaped = escaped.replace("|", "&#124;")
+
+    return "<code>%s</code>" % escaped
 
 
 def _cell(text):
-    """A name, safe to drop into a markdown table cell."""
-    flat = str(text).replace("|", "\\|").replace("\n", " ").replace("\r", " ")
-    return _code(flat)
+    """A name, safe inside a markdown table cell."""
+    return _name(text, in_table=True)
+
+
+def _summary(text):
+    """A name, safe inside a <summary> tag."""
+    return _name(text)
 
 
 def _defang(text):
@@ -675,7 +784,7 @@ def gate(run, exit_code, options):
                            "pass or a failure to measure" % _trim(minimum))
         elif rate < minimum:
             reasons.append("pass rate %s%% is below the required %s%%"
-                           % (_trim(rate), _trim(minimum)))
+                           % (_trim(round(rate, 2)), _trim(minimum)))
 
     minimum = _optional_float(options.min_coverage, "min-coverage")
     if minimum is not None:
@@ -764,11 +873,16 @@ def build_args(env, report_path, help_text=None):
     known = supported(help_text)
     dropped = []
 
-    def take(flag):
+    def take(flag, announce=True):
         if known is None or flag in known:
             return True
 
-        dropped.append(flag)
+        # Only worth saying when the caller asked for it: this action adds
+        # --report-open of its own accord, and an older plugin simply not
+        # having it is not something anybody needs telling.
+        if announce:
+            dropped.append(flag)
+
         return False
 
     args = ["--html-report=%s" % report_path]
@@ -790,9 +904,9 @@ def build_args(env, report_path, help_text=None):
     # `report_open = always` in its pytest.ini opens a browser with no TTY, CI
     # or DISPLAY check at all - which on a runner means handing the report to
     # a console browser and waiting for it.
-    if take("--report-open"):
-        args.append("--report-open=%s"
-                    % (str(env.get("PHR_REPORT_OPEN", "")).strip() or "none"))
+    wanted = str(env.get("PHR_REPORT_OPEN", "")).strip()
+    if take("--report-open", announce=bool(wanted)):
+        args.append("--report-open=%s" % (wanted or "none"))
 
     for line in str(env.get("PHR_TESTS", "")).splitlines():
         line = line.strip()
@@ -803,7 +917,11 @@ def build_args(env, report_path, help_text=None):
     if extra:
         import shlex
 
-        args.extend(shlex.split(extra))
+        try:
+            args.extend(shlex.split(extra))
+        except ValueError as error:
+            raise Unusable("pytest-args could not be read as a command line "
+                           "(%s): %s" % (error, extra))
 
     for flag in dropped:
         warn("the installed pytest-html-reporter has no %s, so that input was "
@@ -822,6 +940,12 @@ def cmd_resolve(options):
     raw = normalise(options.path.strip() or "report")
     expanded = expand_time(raw)
     report_dir, report_name = resolve_report(expanded)
+
+    if report_dir == os.path.abspath("."):
+        warn("report-path %r puts the report in the working directory itself. "
+             "Everything in it - your whole checkout - is what gets uploaded as "
+             "the artifact. Name a folder, such as 'report', to upload just the "
+             "report." % raw)
 
     head = expanded.rsplit("/", 1)[0]
     if ".html" in expanded and head != expanded and ".html" in head:
@@ -842,7 +966,7 @@ def cmd_resolve(options):
     write_output("screenshot-dir", os.path.join(report_dir, SCREENSHOT_DIR))
     # What pytest is handed: the expanded value, so a %H in the path cannot
     # expand twice and leave the action looking in the wrong folder.
-    write_output("html-report", expanded)
+    write_output("html-report", reescape(expanded))
 
     if expanded != raw:
         notice("report-path %s expanded to %s" % (raw, expanded))
@@ -871,8 +995,21 @@ def cmd_prime(options):
     #    file is on disk. On a fresh runner it never is, so every run would
     #    quietly replace its predecessor and the archive would stay empty.
     #    An empty placeholder is enough - the run overwrites it.
+    restored = os.path.join(directory, JSON_NAME)
+
+    if options.previous:
+        stamp = ""
+        try:
+            with open(restored, encoding="utf-8") as handle:
+                stamp = str((json.load(handle) or {}).get("start_time", ""))
+        except Exception:
+            stamp = ""
+
+        with open(options.previous, "w", encoding="utf-8") as handle:
+            handle.write(stamp)
+
     report = os.path.join(directory, options.report_name)
-    if os.path.isfile(os.path.join(directory, JSON_NAME)) and not os.path.isfile(report):
+    if os.path.isfile(restored) and not os.path.isfile(report):
         os.makedirs(directory, exist_ok=True)
         with open(report, "w", encoding="utf-8") as handle:
             handle.write("")
@@ -894,10 +1031,38 @@ def cmd_prime(options):
             with open(path, encoding="utf-8") as handle:
                 data = json.load(handle)
 
-            if str((data or {}).get("status", "")).upper() not in ("PASS", "FAIL"):
+            if not isinstance(data, dict):
+                raise ValueError("not an object")
+
+            if str(data.get("status", "")).upper() not in ("PASS", "FAIL"):
                 raise ValueError("no usable status")
+
+            # The plugin walks these without guarding the walk, so a build
+            # that is shaped wrong here takes the whole report with it.
+            if not isinstance(data.get("status_list"), dict):
+                raise ValueError("no status_list")
+
+            suites = (data.get("content") or {}).get("suites")
+            if not isinstance(suites, (dict, list)):
+                raise ValueError("no suites")
         except Exception:
-            os.rename(path, path + ".unreadable")
+            spoiled = path + ".unreadable"
+            try:
+                # Windows refuses a rename onto an existing name, and a
+                # re-run against the same restored cache would hit exactly
+                # that. Failing here would cost the whole report.
+                if os.path.exists(spoiled):
+                    os.remove(spoiled)
+
+                os.rename(path, spoiled)
+            except OSError:
+                try:
+                    os.remove(path)
+                except OSError:
+                    warn("%s could not be read and could not be moved out of "
+                         "the way; the report may not be written." % path)
+                    continue
+
             quarantined += 1
 
     if quarantined:
@@ -945,6 +1110,18 @@ def _quote(arg):
     return shlex.quote(arg)
 
 
+def _previous(path):
+    """The start_time cmd_prime recorded for a restored build, if any."""
+    if not path:
+        return None
+
+    try:
+        with open(path, encoding="utf-8") as handle:
+            return handle.read().strip() or None
+    except (IOError, OSError):
+        return None
+
+
 USAGE_ERROR = re.compile(
     r"^(ERROR: --|pytest: error:|.*unrecognized arguments)", re.MULTILINE)
 
@@ -966,7 +1143,7 @@ def usage_errors(path):
 
 def cmd_summarize(options):
     """Turn output.json into outputs, a job summary and a comment body."""
-    run = Run.load(options.json)
+    run = Run.load(options.json, previous=_previous(options.previous))
     counts = run.counts
 
     wall = _optional_float(options.wall_clock, "wall-clock")
@@ -992,7 +1169,8 @@ def cmd_summarize(options):
     write_output("total", run.total)
     write_output("suites", run.suites)
     write_output("status", run.status)
-    write_output("pass-rate", "" if run.pass_rate is None else _trim(run.pass_rate))
+    write_output("pass-rate", "" if run.pass_rate is None
+                 else _trim(round(run.pass_rate, 2)))
     write_output("tests-duration", run.duration)
     write_output("wall-clock", "" if wall is None else _trim(wall))
     write_output("coverage", "" if not run.coverage
@@ -1044,7 +1222,10 @@ def cmd_summarize(options):
         fail(reason)
 
     if not ok:
-        write_summary("\n> [!CAUTION]\n> " + "\n> ".join(reasons) + "\n")
+        # Flattened: a reason can carry a path, and a blockquote ends at the
+        # first line that is not one.
+        flat = [" ".join(reason.split()) for reason in reasons]
+        write_summary("\n> [!CAUTION]\n> " + "\n> ".join(flat) + "\n")
 
     return 0 if ok else 1
 
@@ -1062,6 +1243,9 @@ def main(argv=None):
     prime = sub.add_parser("prime", help="ready a restored history for this run")
     prime.add_argument("--report-dir", required=True)
     prime.add_argument("--report-name", default=DEFAULT_REPORT_NAME)
+    prime.add_argument("--previous", default="",
+                       help="where to record the restored build, so the "
+                            "summary can tell it from this run's")
     prime.set_defaults(handler=cmd_prime)
 
     args = sub.add_parser("args", help="build the pytest argument list")
@@ -1077,9 +1261,12 @@ def main(argv=None):
     summarize.add_argument("--title", default="pytest-html-reporter")
     summarize.add_argument("--exit-code", default="0")
     summarize.add_argument("--wall-clock", default="")
-    summarize.add_argument("--failure-limit", type=int, default=10)
-    summarize.add_argument("--suite-limit", type=int, default=20)
-    summarize.add_argument("--slowest-limit", type=int, default=5)
+    # Deliberately not type=int: a workflow forwarding an input it does not
+    # have passes an empty string, and _limit() reads that as "use the
+    # default" rather than as a reason to abandon the run.
+    summarize.add_argument("--failure-limit", default="10")
+    summarize.add_argument("--suite-limit", default="20")
+    summarize.add_argument("--slowest-limit", default="5")
     summarize.add_argument("--job-summary", default="true")
     summarize.add_argument("--comment-body", default="")
     summarize.add_argument("--artifact-url", default="")
@@ -1091,6 +1278,10 @@ def main(argv=None):
     summarize.add_argument("--coverage-file", default="")
     summarize.add_argument("--pytest-log", default="")
     summarize.add_argument("--fail-on-empty", default="true")
+    summarize.add_argument("--previous", default="",
+                           help="a file cmd_prime wrote naming the build the "
+                                "cache restored, so it is not mistaken for "
+                                "this run's")
     summarize.set_defaults(handler=cmd_summarize)
 
     options = parser.parse_args(argv)
@@ -1098,7 +1289,33 @@ def main(argv=None):
         parser.print_help()
         return 2
 
-    return options.handler(options)
+    try:
+        return options.handler(options)
+    except Unusable as error:
+        fail(str(error))
+        return _verdict_on_error(options, 2)
+    except Exception as error:
+        import traceback
+
+        traceback.print_exc()
+        fail("%s: %s" % (type(error).__name__, error))
+        return _verdict_on_error(options, 3)
+
+
+def _verdict_on_error(options, code):
+    """Leave a failing verdict behind, whatever went wrong reaching one.
+
+    The step that runs this reads the verdict back out of an output rather
+    than out of an exit code, so a crash that writes no verdict is a crash
+    that would otherwise be read as "nothing to fail on".
+    """
+    if getattr(options, "handler", None) is cmd_summarize:
+        write_output("gate-passed", "false")
+        write_output("gate-reasons",
+                     "the summary could not be produced, so this run was never "
+                     "checked - see the error above")
+
+    return code
 
 
 if __name__ == "__main__":

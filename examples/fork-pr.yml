@@ -26,13 +26,21 @@ jobs:
           comment: 'false'          # nothing to comment with, here
           artifact-name: pytest-html-report
 
+      # Written after the tests, so the fork's code has had its turn - and
+      # checked again by the second workflow against the commit this run
+      # actually tested, because an artifact out of a job that ran somebody
+      # else's tests is a claim, not a fact.
       - name: Keep the summary and the PR number for the next workflow
         if: always()
         run: |
+          set -euo pipefail
+
+          rm -rf comment
           mkdir -p comment
-          printf '%s' "${{ github.event.number }}" > comment/pr-number
+          printf '%s' "$PR_NUMBER" > comment/pr-number
           printf '%s' "$SUMMARY" > comment/body.md
         env:
+          PR_NUMBER: ${{ github.event.number }}
           SUMMARY: ${{ steps.report.outputs.summary }}
 
       - uses: actions/upload-artifact@v4

@@ -59,7 +59,7 @@ run measured any. No clicking through to an artifact to find out what broke.
 on every push rather than a new comment each time.
 
 **As an artifact** — the full interactive HTML report: Overview, Trends,
-Analytics, Test Steps, Archives, Screenshots, Attachments, Test Coverage.
+Analytics, Test Steps, Archives, Screenshots, Attachments and Test Coverage.
 
 **As outputs** — `passed`, `failed`, `pass-rate`, `coverage`, `status` and a
 dozen more, so a later step can post to Slack, open an issue, or gate a deploy.
@@ -160,7 +160,7 @@ The plugin picks up the live pytest-cov data, or a `coverage.json` /
 `coverage.xml` sitting in the report directory, the repository root, or the
 working directory. Only a `.coverage` data file or a file under some other name
 needs `report-coverage-file` — and note that naming a file there is *final*: if
-it cannot be read, the Coverage tab is blank, and the coverage this run
+it cannot be read, the Test Coverage section is blank, and the coverage this run
 measured is not used instead.
 
 If your tests run in one job and the report in another, pass a Cobertura
@@ -233,13 +233,15 @@ The deploy job is three more lines — see
     fail-on-error: 'false'      # decide for yourself, below
 
 - name: Tell the team
-  if: steps.report.outputs.status == 'FAIL'
-  run: |
-    gh issue create \
-      --title "Nightly run: ${{ steps.report.outputs.failed }} failing" \
-      --body "${{ steps.report.outputs.summary }}"
+  if: steps.report.outputs.status != 'PASS'
+  run: gh issue create --title "Nightly run: $FAILED failing" --body "$SUMMARY"
   env:
     GH_TOKEN: ${{ github.token }}
+    FAILED: ${{ steps.report.outputs.failed }}
+    # Through env, never spliced into the command: the summary is multi-line
+    # markdown built partly out of test names, and a test name is not
+    # something to hand to a shell.
+    SUMMARY: ${{ steps.report.outputs.summary }}
 ```
 
 <br>
@@ -269,9 +271,13 @@ as many as you like. Booleans are the strings `'true'` and `'false'`.
 
 ### The report
 
-Each of these maps one-to-one onto a plugin flag, and each is **left out
-entirely when empty** — so the plugin's own defaults, and any `report_*` key in
-your `pytest.ini`, still apply. Setting one here overrides the ini key.
+Each of these maps onto a plugin flag, and each is **left out entirely when
+empty** — so the plugin's own defaults, and any `report_*` key in your
+`pytest.ini`, still apply. Setting one here overrides the ini key.
+
+`report-open` is the one exception: the action passes `--report-open=none`
+whether or not you set it, for the reason in
+[Things worth knowing](#things-worth-knowing).
 
 | Input | Flag | Description |
 | --- | --- | --- |
@@ -279,7 +285,7 @@ your `pytest.ini`, still apply. Setting one here overrides the ini key.
 | `title` | `--title` | Report title. Shown cut to 20 characters, with the full text as the heading's tooltip. |
 | `environment` | `--environment` | Name of the environment under test, e.g. `staging`. |
 | `build-info` | `--build-info` | Extra `KEY=VALUE` details, one per line. `#` comments are skipped. |
-| `report-links` | `--report-link` | Side-nav links, one `LABEL=URL` per line. Only `http`, `https` and `mailto` links are kept. |
+| `report-links` | `--report-link` | Side-nav links, one `LABEL=URL` per line. A relative path works; a link with a scheme the plugin does not know — `javascript:`, `data:` — is dropped silently. |
 | `archive-count` | `--archive-count` | Builds to keep. Empty keeps every one; `0` deletes them all. |
 | `archive-days` | `--archive-days` | Keep only builds from the last N days. Accepts fractions, e.g. `0.5`. |
 | `archive-since` | `--archive-since` | Delete builds older than `YYYY-MM-DD` or `'YYYY-MM-DD HH:MM'`. Read in the runner's timezone, which is UTC. |
@@ -339,7 +345,7 @@ your `pytest.ini`, still apply. Setting one here overrides the ini key.
 | `suites` | `2` | Test suites in the run. |
 | `pass-rate` | `50` | `passed / (passed + failed + errors)`, as a percentage. Empty when nothing decisive ran. |
 | `coverage` | `87.42` | Coverage percentage. Empty when the run produced none. |
-| `tests-duration` | `5.35` | Summed test durations, in seconds. The report does not record a run duration, so this leaves out collection, session fixtures and the gaps between tests. |
+| `tests-duration` | `5.35` | Summed test durations, in seconds. The report's `output.json` records no run total, so this leaves out collection, session fixtures and the gaps between tests — `wall-clock` is the figure for how long the step took. |
 | `wall-clock` | `74` | Seconds the pytest step took, measured by the action. |
 | `exit-code` | `1` | What pytest exited with. |
 | `report-file` | `/…/report/pytest_html_report.html` | The generated HTML report. |

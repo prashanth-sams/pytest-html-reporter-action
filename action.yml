@@ -145,8 +145,9 @@ inputs:
   report-open:
     description: >-
       Whether to open the finished report in a browser - auto, always or none.
-      Leave empty: the plugin's own default already declines to open one on a
-      runner. Only a self-hosted runner with a desktop has a use for this.
+      Left empty the action passes none, because the plugin's own auto can be
+      overridden by a report_open key in your pytest.ini and a runner has no
+      browser to open into. Set it only on a self-hosted runner with a desktop.
     required: false
     default: ''
 
@@ -356,6 +357,8 @@ runs:
         PHR_REPORT_COVERAGE: ${{ inputs.report-coverage }}
         PHR_REPORT_OPEN: ${{ inputs.report-open }}
         PHR_COMMENT_MODE: ${{ inputs.comment-mode }}
+        PHR_PR_NUMBER: ${{ inputs.pr-number }}
+        PHR_HAS_TOKEN: ${{ inputs.github-token != '' && 'yes' || '' }}
         PHR_WORKING_DIRECTORY: ${{ inputs.working-directory }}
         PHR_REPORT_LOG_LIMIT: ${{ inputs.report-log-limit }}
         PHR_REPORT_ATTACHMENT_LIMIT: ${{ inputs.report-attachment-limit }}
@@ -379,6 +382,10 @@ runs:
         one_of report-coverage    "$PHR_REPORT_COVERAGE"    auto none
         one_of report-open        "$PHR_REPORT_OPEN"        auto always none
         one_of comment-mode       "$PHR_COMMENT_MODE"       always on-failure
+
+        case "${PHR_PR_NUMBER:-}" in
+          ""|*[!0-9]*) [ -z "${PHR_PR_NUMBER:-}" ] || fail "pr-number must be a pull request number - got '$PHR_PR_NUMBER'" ;;
+        esac
 
         # The plugin clamps a negative limit to 0, and 0 means "no limit" for
         # every one of these. Somebody writing -1 meant the opposite.
@@ -463,8 +470,13 @@ runs:
 
         if [ -n "$PHR_EXTRA_PACKAGES" ]; then
           echo "::group::pip install $PHR_EXTRA_PACKAGES"
+          # Split on whitespace, which is the point, but do not glob: a
+          # package name holding a * would otherwise be expanded against
+          # whatever happens to be in the working directory.
+          set -f
           # shellcheck disable=SC2086
           "$PHR_PYTHON" -m pip install $PHR_EXTRA_PACKAGES
+          set +f
           echo "::endgroup::"
         fi
 
@@ -534,17 +546,18 @@ runs:
 
         # Ready whatever the cache restored, and clear the last run's leavings.
         "$PHR_PYTHON" "$PHR_ACTION_PATH/scripts/phr.py" prime \
-          --report-dir "$PHR_REPORT_DIR" --report-name "$PHR_REPORT_NAME"
+          --report-dir "$PHR_REPORT_DIR" --report-name "$PHR_REPORT_NAME" \
+          --previous "$RUNNER_TEMP/pytest-html-reporter-previous"
 
         # Which report flags this plugin actually has. A user is free to pin
         # an older version, and an unknown flag does not degrade a feature -
         # argparse aborts the whole run before a single test is collected.
-        helpfile="$(mktemp)"
+        helpfile="$RUNNER_TEMP/pytest-html-reporter-help.txt"
         set +e
         "$PHR_PYTHON" -m pytest --help > "$helpfile" 2>&1
         set -e
 
-        argfile="$(mktemp)"
+        argfile="$RUNNER_TEMP/pytest-html-reporter-args"
         "$PHR_PYTHON" "$PHR_ACTION_PATH/scripts/phr.py" args \
           --html-report "$PHR_HTML_REPORT" --out "$argfile" --help-text "$helpfile"
         rm -f "$helpfile"
@@ -560,8 +573,15 @@ runs:
 
         logfile="$RUNNER_TEMP/pytest-html-reporter.log"
 
+        # Everything pytest prints is written by the tests, and on a fork's
+        # pull request the tests are the fork author's. Inside a
+        # stop-commands block none of it is read as a workflow command - not
+        # ::add-mask::, and not a ::stop-commands:: of its own.
+        guard="phr-$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+
         started="$(date +%s)"
         echo "::group::pytest"
+        echo "::stop-commands::$guard"
         # A hosted runner starts this script with -e already set, and tests
         # that fail are the ordinary case here rather than an accident, so the
         # exit code is captured instead of being allowed to end the step. The
@@ -571,6 +591,7 @@ runs:
         "$PHR_PYTHON" -m pytest "${args[@]}" 2>&1 | tee "$logfile"
         code=${PIPESTATUS[0]}
         set -e
+        echo "::$guard::"
         echo "::endgroup::"
         finished="$(date +%s)"
 
@@ -660,21 +681,43 @@ runs:
           --coverage-file "$PHR_REPORT_COVERAGE_FILE" \
           --pytest-log "$PHR_PYTEST_LOG" \
           --fail-on-empty "$PHR_FAIL_ON_EMPTY" \
+          --previous "$RUNNER_TEMP/pytest-html-reporter-previous" \
           --comment-body "$PHR_COMMENT_BODY"
+        summarized=$?
         set -e
 
-        echo "comment-body=$PHR_COMMENT_BODY" >> "$GITHUB_OUTPUT"
+        {
+          echo "comment-body=$PHR_COMMENT_BODY"
+          echo "summarize-exit=$summarized"
+        } >> "$GITHUB_OUTPUT"
+
+        # 0 is a clean run, 1 is a gate that was not met - both of which the
+        # last step decides on. Anything else is this helper falling over,
+        # and that is not something to be quiet about.
+        if [ "$summarized" -gt 1 ]; then
+          echo "::error title=pytest-html-reporter::the summary step failed with $summarized. The report may still be in the artifact; the log above says what went wrong."
+        fi
 
     - name: Comment on the pull request
       if: >-
         inputs.comment == 'true'
-        && (github.event_name == 'pull_request' || inputs.pr-number != '')
+        && (github.event_name == 'pull_request'
+            || github.event_name == 'pull_request_target'
+            || inputs.pr-number != '')
         && (inputs.comment-mode == 'always' || steps.summarize.outputs.status != 'PASS')
       uses: actions/github-script@v7
       with:
         github-token: ${{ inputs.github-token }}
         script: |
           const fs = require('fs');
+
+          if (!process.env.PHR_HAS_TOKEN) {
+            core.warning(
+              'github-token is empty, so no comment was posted. Pass a token ' +
+              'with pull-requests: write, or leave the input unset to use the ' +
+              "job's own.");
+            return;
+          }
 
           const marker = '<!-- pytest-html-reporter-action -->';
           const path = process.env.PHR_COMMENT_BODY;
@@ -729,12 +772,24 @@ runs:
       env:
         PHR_GATE_PASSED: ${{ steps.summarize.outputs.gate-passed }}
         PHR_GATE_REASONS: ${{ steps.summarize.outputs.gate-reasons }}
+        PHR_SUMMARIZE_EXIT: ${{ steps.summarize.outputs.summarize-exit }}
       run: |
         set -euo pipefail
 
-        if [ "$PHR_GATE_PASSED" = "false" ]; then
-          echo "::error title=pytest-html-reporter::$PHR_GATE_REASONS"
-          exit 1
-        fi
-
-        echo "pytest-html-reporter: nothing to fail on."
+        # Only an explicit pass is a pass. An empty value means the step that
+        # writes it did not get that far, and a run whose verdict was never
+        # reached is not a run that succeeded.
+        case "$PHR_GATE_PASSED" in
+          true)  echo "pytest-html-reporter: nothing to fail on." ;;
+          false)
+            echo "::error title=pytest-html-reporter::$PHR_GATE_REASONS"
+            exit 1
+            ;;
+          *)
+            echo "::error title=pytest-html-reporter::the run was never given" \
+                 "a verdict (the summary step exited" \
+                 "${PHR_SUMMARIZE_EXIT:-without reporting}). Failing rather than" \
+                 "passing a run nobody checked."
+            exit 1
+            ;;
+        esac

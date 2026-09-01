@@ -52,6 +52,15 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
 
-      - run: python -m pip install --upgrade pip pytest
+      # pyyaml is what tests/test_action_yml.py reads action.yml with. Without
+      # it that whole file importorskips away and the job passes having
+      # checked nothing.
+      - run: python -m pip install --upgrade pip pytest pyyaml
 
       - run: python -m pytest tests/ -q
+
+      - name: The action.yml suite really ran
+        run: |
+          set -euo pipefail
+          python -m pytest tests/test_action_yml.py -q --collect-only >/dev/null
+          test "$(python -m pytest tests/test_action_yml.py -q --collect-only 2>/dev/null | grep -c '::')" -gt 10

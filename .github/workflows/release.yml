@@ -19,17 +19,34 @@ jobs:
           fetch-depth: 0
 
       - name: Move the major tag
+        if: github.event.release.prerelease == false
         env:
           TAG: ${{ github.event.release.tag_name }}
         run: |
           set -euo pipefail
 
+          # vX.Y.Z and nothing else: a prerelease is filtered by the `if`
+          # above, and a tag with a suffix is not the stable major either.
           case "$TAG" in
             v[0-9]*.[0-9]*.[0-9]*) ;;
             *) echo "::notice::$TAG is not a vX.Y.Z tag, leaving the major tag alone"; exit 0 ;;
           esac
+          case "$TAG" in
+            *[!v0-9.]*) echo "::notice::$TAG carries a suffix, leaving the major tag alone"; exit 0 ;;
+          esac
 
           major="${TAG%%.*}"
+
+          # A backport released after a newer version must not drag the major
+          # tag backwards - `@v1` means the newest v1, not the last published.
+          newest="$(git tag --list "$major.*.*" \
+                    | grep -E "^$major\.[0-9]+\.[0-9]+$" \
+                    | sort -V | tail -1)"
+
+          if [ "$newest" != "$TAG" ]; then
+            echo "::notice::$newest is newer than $TAG, so $major stays where it is"
+            exit 0
+          fi
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"

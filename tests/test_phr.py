@@ -402,9 +402,19 @@ def test_a_long_message_is_trimmed():
     assert len(markdown) < 6000
 
 
-def test_a_name_holding_a_backtick_stays_inside_its_code_span():
-    assert phr._code("a`b") == "``a`b``"
-    assert phr._code("`b") == "`` `b ``"
+@pytest.mark.parametrize("name,expected", [
+    ("</details>", "&lt;/details&gt;"),          # would close the block it heads
+    ("[notice](http://evil)", "&#91;notice&#93;(http://evil)"),  # would be a link
+    ("a&b", "a&amp;b"),
+    ("a`b", "a`b"),                              # inside <code>, a backtick is one
+])
+def test_a_name_is_only_ever_itself(name, expected):
+    assert phr._name(name) == "<code>%s</code>" % expected
+
+
+def test_a_name_in_a_table_loses_its_pipes_as_well():
+    assert phr._name("a|b", in_table=True) == "<code>a&#124;b</code>"
+    assert phr._name("a|b") == "<code>a|b</code>"
 
 
 def test_coverage_is_shown_when_the_run_measured_it():
@@ -571,10 +581,10 @@ def test_a_pipe_in_a_name_cannot_break_the_table():
     row = [line for line in markdown.splitlines()
            if line.startswith("| ") and "b.py" in line][0]
 
-    # GFM splits a table row on unescaped pipes, inside a code span as much
-    # as outside it, so the escape is what keeps this one row a row.
-    assert "a\\|b.py" in row
-    assert row.replace("\\|", "").count("|") == 6  # five cells, six delimiters
+    # GFM ends a cell at an unescaped pipe however deeply it is nested, so
+    # the entity is what keeps this one row a row.
+    assert "a&#124;b.py" in row
+    assert row.count("|") == 6  # five cells, six delimiters
 
 
 def test_a_test_name_cannot_smuggle_in_a_workflow_command():
@@ -679,9 +689,10 @@ def test_a_repeated_flag_is_dropped_as_a_whole(capsys):
 # ---------------------------------------------------------------------------
 
 class Prime(object):
-    def __init__(self, directory, name="pytest_html_report.html"):
+    def __init__(self, directory, name="pytest_html_report.html", previous=""):
         self.report_dir = str(directory)
         self.report_name = name
+        self.previous = str(previous)
 
 
 def test_a_placeholder_is_stood_in_so_the_last_build_is_archived(tmp_path):
@@ -701,10 +712,38 @@ def test_no_placeholder_is_invented_for_a_first_run(tmp_path):
     assert not (tmp_path / "pytest_html_report.html").exists()
 
 
+ARCHIVED = json.dumps({
+    "content": {"suites": {"0": {"suite_name": "tests/t.py", "tests": {}, "status": {}}}},
+    "date": "September 01, 2026", "start_time": 1788283688.0, "total_suite": 1,
+    "status": "PASS", "status_list": {"pass": "1", "fail": "0"}, "total_tests": "1",
+})
+
+
+@pytest.mark.parametrize("body,why", [
+    ("{truncated", "not json at all"),
+    ('{"status": "MAYBE"}', "a status the plugin cannot map"),
+    ('{"status": "PASS"}', "no status_list to read counts out of"),
+    ('{"status": "PASS", "status_list": {}}', "no suites to walk"),
+    ('["not", "an", "object"]', "the wrong shape entirely"),
+])
+def test_an_archived_build_the_plugin_would_choke_on_is_set_aside(tmp_path, body, why):
+    # The plugin reads archive/*.json without guarding the read, so one bad
+    # file raises inside pytest_terminal_summary and costs the whole report.
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    (archive / "output_1.json").write_text(ARCHIVED, encoding="utf-8")
+    (archive / "output_2.json").write_text(body, encoding="utf-8")
+
+    phr.cmd_prime(Prime(tmp_path))
+
+    assert sorted(path.name for path in archive.iterdir()) == [
+        "output_1.json", "output_2.json.unreadable"], why
+
+
 def test_an_unreadable_archived_build_is_set_aside(tmp_path, capsys):
     archive = tmp_path / "archive"
     archive.mkdir()
-    (archive / "output_1.json").write_text('{"status": "PASS"}', encoding="utf-8")
+    (archive / "output_1.json").write_text(ARCHIVED, encoding="utf-8")
     (archive / "output_2.json").write_text("{truncated", encoding="utf-8")
     (archive / "output_3.json").write_text('{"status": "MAYBE"}', encoding="utf-8")
 
@@ -714,7 +753,7 @@ def test_an_unreadable_archived_build_is_set_aside(tmp_path, capsys):
 
     assert kept == ["output_1.json", "output_2.json.unreadable",
                     "output_3.json.unreadable"]
-    assert "could not be read" in capsys.readouterr().out
+    assert "2 archived builds could not be read" in capsys.readouterr().out
 
 
 def test_stale_screenshots_are_cleared(tmp_path):
@@ -780,7 +819,7 @@ def test_a_comment_body_is_trimmed_harder_than_the_summary(tmp_path):
         artifact_url = pages_url = run_url = ""
         fail_on_error = "false"
         fail_on_empty = "false"
-        min_pass_rate = min_coverage = coverage_file = pytest_log = ""
+        min_pass_rate = min_coverage = coverage_file = pytest_log = previous = ""
 
     phr.cmd_summarize(Options())
 
@@ -843,3 +882,233 @@ def test_a_malformed_or_hostile_report_still_gates(name):
 
     assert ok in (True, False)
     assert all(isinstance(reason, str) for reason in reasons)
+
+
+# ---------------------------------------------------------------------------
+# the two expansions
+# ---------------------------------------------------------------------------
+
+def test_a_surviving_percent_is_re_escaped_for_the_plugin():
+    # The action expands the path once so it and the plugin cannot disagree
+    # about where the report went - but the plugin expands whatever it is
+    # handed, and "%p" is AM/PM. Without this, "100%%pass" resolves here to
+    # "100%pass" and lands over there at "100PMass".
+    assert phr.reescape("100%pass/r.html") == "100%%pass/r.html"
+    assert phr.reescape("reports/2026/r.html") == "reports/2026/r.html"
+
+
+def test_the_path_handed_to_pytest_survives_a_second_expansion(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
+
+    class Options(object):
+        path = "100%%pass/report.html"
+        history = "false"
+
+    phr.cmd_resolve(Options())
+
+    written = dict(line.split("=", 1) for line in capsys.readouterr().out.splitlines()
+                   if "=" in line and not line.startswith("::"))
+    handed = written["html-report"]
+
+    assert phr.expand_time(handed) == "100%pass/report.html"
+
+
+# ---------------------------------------------------------------------------
+# how many to list
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("value,expected", [(None, 7), ("", 7), (0, 0), ("0", 0), (3, 3), ("x", 7)])
+def test_a_listing_limit_of_zero_lists_none(value, expected):
+    assert phr._limit(value, 7) == expected
+
+
+def test_failure_limit_zero_lists_no_failures():
+    markdown = phr.render(load(), {"title": "t", "failure_limit": 0,
+                                   "slowest_limit": 0})
+
+    assert "test_login_bad_password" not in markdown
+    assert "2 further failures not listed here" in markdown
+
+
+def test_slowest_limit_zero_lists_no_slowest():
+    assert "Slowest tests" not in phr.render(load(), {"title": "t", "slowest_limit": 0})
+
+
+# ---------------------------------------------------------------------------
+# trimming
+# ---------------------------------------------------------------------------
+
+def test_a_trim_closes_what_it_cut_through():
+    markdown = "<details><summary>x</summary>\n\n```text\n" + ("y" * 5000) + "\n```\n</details>\n"
+
+    cut = phr.trim(markdown, 500, "a comment")
+
+    assert cut.count("```") % 2 == 0
+    assert cut.count("<details>") == cut.count("</details>")
+    assert "Trimmed to fit" in cut
+
+
+def test_a_short_enough_summary_is_left_alone():
+    assert phr.trim("hello", 500, "a comment") == "hello"
+
+
+# ---------------------------------------------------------------------------
+# awkward shapes and awkward inputs
+# ---------------------------------------------------------------------------
+
+def test_every_reader_copes_with_a_list_of_tests():
+    run = phr.Run({
+        "status": "FAIL", "status_list": {"fail": "1"}, "total_suite": 1,
+        "content": {"suites": {"0": {
+            "suite_name": "tests/t.py", "status": {"total_fail": 1},
+            "tests": [{"status": "FAIL", "test_name": "t", "message": "boom",
+                       "rerun": "0", "duration": 2.5}]}}},
+    })
+
+    assert run.duration == 2.5
+    assert len(run.failures()) == 1
+    assert run.slowest()[0]["duration"] == 2.5
+
+
+def test_an_unbalanced_quote_in_pytest_args_is_reported_not_traced():
+    with pytest.raises(phr.Unusable) as caught:
+        phr.build_args({"PHR_PYTEST_ARGS": '-k "unclosed'}, "report")
+
+    assert "pytest-args" in str(caught.value)
+
+
+def test_the_cli_reports_an_unusable_input_as_an_error(tmp_path, capsys):
+    code = phr.main(["args", "--html-report", "report",
+                     "--out", str(tmp_path / "args")])
+
+    assert code == 0  # nothing wrong with that one
+
+    os.environ["PHR_PYTEST_ARGS"] = '-k "unclosed'
+    try:
+        code = phr.main(["args", "--html-report", "report",
+                         "--out", str(tmp_path / "args")])
+    finally:
+        del os.environ["PHR_PYTEST_ARGS"]
+
+    assert code == 2
+    assert "::error" in capsys.readouterr().out
+
+
+def test_report_open_is_not_announced_as_dropped_when_nobody_asked(capsys):
+    # This action adds --report-open itself, so an older plugin simply not
+    # having it is not something to warn about.
+    phr.build_args({}, "report", HELP)
+
+    assert "--report-open" not in capsys.readouterr().out
+
+
+def test_report_open_is_announced_when_it_was_asked_for(capsys):
+    phr.build_args({"PHR_REPORT_OPEN": "always"}, "report", HELP)
+
+    assert "--report-open" in capsys.readouterr().out
+
+
+def test_a_pass_rate_is_compared_before_it_is_rounded():
+    # 189 of 200 is 94.5%, which rounds to nothing that would sneak past 95.
+    # 1999 of 2000 is 99.95%, which displays as 99.95 and must not pass 99.96.
+    run = phr.Run({"status": "PASS", "status_list": {"pass": "1999", "fail": "1"}})
+
+    ok, reasons = phr.gate(run, 0, Options(min_pass_rate="99.96"))
+
+    assert ok is False
+
+
+# ---------------------------------------------------------------------------
+# a report this run did not write
+# ---------------------------------------------------------------------------
+
+def test_the_restored_build_is_not_reported_as_this_run(tmp_path, capsys):
+    # With history on, a cache restore puts the last build's output.json in
+    # place before pytest runs. A run that then writes none of its own must
+    # not be summarised from it - reporting the last build's passes as this
+    # run's is worse than reporting nothing.
+    report = tmp_path / "output.json"
+    report.write_text(json.dumps({"status": "PASS", "start_time": 1788283688.0,
+                                  "status_list": {"pass": "9"}}), encoding="utf-8")
+    marker = tmp_path / "previous"
+
+    phr.cmd_prime(Prime(tmp_path, previous=marker))
+
+    assert marker.read_text(encoding="utf-8") == "1788283688.0"
+
+    run = phr.Run.load(str(report), previous=marker.read_text(encoding="utf-8"))
+
+    assert run.found is False
+    assert run.status == "UNKNOWN"
+    assert "restored from the build history" in capsys.readouterr().out
+
+
+def test_a_build_this_run_did_write_is_reported(tmp_path):
+    report = tmp_path / "output.json"
+    report.write_text(json.dumps({"status": "PASS", "start_time": 1788283688.0,
+                                  "status_list": {"pass": "9"}}), encoding="utf-8")
+
+    run = phr.Run.load(str(report), previous="1788111111.0")
+
+    assert run.found is True
+    assert run.counts["pass"] == 9
+
+
+def test_a_report_that_is_not_an_object_is_no_report(tmp_path, capsys):
+    broken = tmp_path / "output.json"
+    broken.write_text("[1, 2, 3]", encoding="utf-8")
+
+    run = phr.Run.load(str(broken))
+
+    assert run.found is False
+    assert "holds list where the report should be" in capsys.readouterr().out
+
+
+def test_a_report_in_the_working_directory_is_warned_about(tmp_path, monkeypatch, capsys):
+    # report-dir is what gets uploaded, so a bare filename means the artifact
+    # is the whole checkout.
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
+
+    class Options(object):
+        path = "run.html"
+        history = "false"
+
+    phr.cmd_resolve(Options())
+
+    assert "your whole checkout" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# a verdict, whatever happens
+# ---------------------------------------------------------------------------
+
+def test_an_empty_limit_does_not_abandon_the_run(tmp_path):
+    # An action input default applies when the key is absent, not when it is
+    # supplied empty - so a workflow forwarding an input it does not have
+    # passes "". That must not stop the run being given a verdict.
+    output = tmp_path / "out"
+
+    result = run_cli(
+        ["summarize", "--json", os.path.join(FIXTURES, "output.json"),
+         "--exit-code", "1", "--failure-limit", "", "--slowest-limit", ""],
+        {"GITHUB_OUTPUT": str(output), "GITHUB_STEP_SUMMARY": str(tmp_path / "s.md")})
+
+    assert result.returncode == 1
+    assert "gate-passed=false" in output.read_text(encoding="utf-8")
+
+
+def test_a_crash_still_leaves_a_failing_verdict(tmp_path, monkeypatch, capsys):
+    # The step that runs this reads the verdict out of an output, not out of
+    # an exit code, so a crash that writes no verdict reads as "nothing to
+    # fail on". It has to leave one behind.
+    output = tmp_path / "out"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    monkeypatch.setattr(phr, "render", lambda *a, **k: 1 / 0)
+
+    code = phr.main(["summarize", "--json", os.path.join(FIXTURES, "output.json")])
+
+    assert code == 3
+    assert "gate-passed=false" in output.read_text(encoding="utf-8")
+    assert "never checked" in output.read_text(encoding="utf-8")

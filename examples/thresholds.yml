@@ -16,18 +16,28 @@ jobs:
           # Let a red run through, and judge it below.
           fail-on-error: 'false'
 
+      # != 'PASS' rather than == 'FAIL': a run that produced no report at all
+      # reports UNKNOWN, and that is the one outcome nobody should wave through.
       - name: A few flakes are survivable; a collapse is not
-        if: steps.report.outputs.status == 'FAIL'
+        if: steps.report.outputs.status != 'PASS'
         run: |
+          set -euo pipefail
+
+          if [ "$STATUS" != "FAIL" ]; then
+            echo "::error::the run produced no report to judge (status $STATUS)"
+            exit 1
+          fi
+
           echo "pass rate: $PASS_RATE%  ($FAILED failed of $TOTAL)"
 
-          if [ "${PASS_RATE%%.*}" -lt 90 ]; then
+          if [ -z "$PASS_RATE" ] || [ "${PASS_RATE%%.*}" -lt 90 ]; then
             echo "::error::pass rate $PASS_RATE% - this is not flakiness"
             exit 1
           fi
 
           echo "::warning::$FAILED failing, pass rate still $PASS_RATE% - letting it through"
         env:
+          STATUS: ${{ steps.report.outputs.status }}
           PASS_RATE: ${{ steps.report.outputs.pass-rate }}
           FAILED: ${{ steps.report.outputs.failed }}
           TOTAL: ${{ steps.report.outputs.total }}

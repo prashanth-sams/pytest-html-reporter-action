@@ -34,6 +34,7 @@ jobs:
           working-directory: sample
           tests: tests/
           title: self-test
+          summary-title: self-test summary
           environment: ci
           build-info: |
             os=${{ matrix.os }}
@@ -57,9 +58,11 @@ jobs:
           test -f "$REPORT"             || { echo "no report at '$REPORT'"; exit 1; }
           test -f "$JSON"               || { echo "no output.json at '$JSON'"; exit 1; }
 
+          # The heading comes from summary-title, not from the report's own
+          # title - they are different things and the assertion says which.
           case "$SUMMARY" in
-            *"self-test"*) ;;
-            *) echo "the summary does not carry the title"; exit 1 ;;
+            *"self-test summary"*) ;;
+            *) echo "the summary does not carry summary-title"; exit 1 ;;
           esac
         env:
           STATUS: ${{ steps.report.outputs.status }}
