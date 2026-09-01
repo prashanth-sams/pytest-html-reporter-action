@@ -1,0 +1,18 @@
+version: 2
+
+updates:
+  # The actions this action calls, in action.yml.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: deps
+
+  # And the ones this repository's own workflows call.
+  - package-ecosystem: github-actions
+    directory: /.github/workflows
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: deps

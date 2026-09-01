@@ -1,0 +1,23 @@
+# Trends, Archives and Analytics need more than one build to say anything.
+# The cache carries the archived builds from run to run; the retention
+# limits stop the report growing without end.
+name: nightly
+
+on:
+  schedule:
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: prashanth-sams/pytest-html-reporter-action@v1
+        with:
+          tests: tests/
+          title: Nightly
+          history: 'true'
+          archive-days: '30'
+          environment: staging

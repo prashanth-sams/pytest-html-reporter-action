@@ -1,0 +1,188 @@
+# The action, run against a project built for the purpose, on every runner
+# it claims to support. `uses: ./` picks up this checkout - so the assertions
+# below are what stops a broken action.yml passing.
+name: self-test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  green:
+    name: a passing run (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build a small project to point the action at
+        shell: bash
+        run: bash tests/fixtures/make-project.sh sample pass
+
+      - uses: ./
+        id: report
+        with:
+          python-version: '3.12'
+          working-directory: sample
+          tests: tests/
+          title: self-test
+          environment: ci
+          build-info: |
+            os=${{ matrix.os }}
+          artifact-name: self-test-green-${{ matrix.os }}
+          extra-packages: pytest-cov
+          pytest-args: --cov=src
+          min-coverage: '40'
+
+      - name: The outputs must say what the run did
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test "$STATUS" = "PASS"       || { echo "status was '$STATUS'"; exit 1; }
+          test "$PASSED" = "3"          || { echo "passed was '$PASSED'"; exit 1; }
+          test "$FAILED" = "0"          || { echo "failed was '$FAILED'"; exit 1; }
+          test "$TOTAL"  = "3"          || { echo "total was '$TOTAL'"; exit 1; }
+          test "$RATE"   = "100"        || { echo "pass-rate was '$RATE'"; exit 1; }
+          test "$CODE"   = "0"          || { echo "exit-code was '$CODE'"; exit 1; }
+          test -n "$COVERAGE"           || { echo "no coverage was measured"; exit 1; }
+          test -f "$REPORT"             || { echo "no report at '$REPORT'"; exit 1; }
+          test -f "$JSON"               || { echo "no output.json at '$JSON'"; exit 1; }
+
+          case "$SUMMARY" in
+            *"self-test"*) ;;
+            *) echo "the summary does not carry the title"; exit 1 ;;
+          esac
+        env:
+          STATUS: ${{ steps.report.outputs.status }}
+          PASSED: ${{ steps.report.outputs.passed }}
+          FAILED: ${{ steps.report.outputs.failed }}
+          TOTAL: ${{ steps.report.outputs.total }}
+          RATE: ${{ steps.report.outputs.pass-rate }}
+          CODE: ${{ steps.report.outputs.exit-code }}
+          COVERAGE: ${{ steps.report.outputs.coverage }}
+          REPORT: ${{ steps.report.outputs.report-file }}
+          JSON: ${{ steps.report.outputs.json-path }}
+          SUMMARY: ${{ steps.report.outputs.summary }}
+
+  red:
+    name: a failing run is reported, not swallowed
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - shell: bash
+        run: bash tests/fixtures/make-project.sh sample fail
+
+      - uses: ./
+        id: report
+        continue-on-error: true
+        with:
+          working-directory: sample
+          tests: tests/
+          artifact-name: self-test-red
+          # The run must reach the summary and the artifact before it goes red.
+          fail-on-error: 'true'
+
+      - name: The step failed, and it still said why
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test "$OUTCOME" = "failure" || { echo "the action did not fail the step"; exit 1; }
+          test "$STATUS"  = "FAIL"    || { echo "status was '$STATUS'"; exit 1; }
+          test "$FAILED"  = "1"       || { echo "failed was '$FAILED'"; exit 1; }
+          test "$ERRORS"  = "1"       || { echo "errors was '$ERRORS'"; exit 1; }
+          test "$SKIPPED" = "1"       || { echo "skipped was '$SKIPPED'"; exit 1; }
+          test "$CODE"    = "1"       || { echo "exit-code was '$CODE'"; exit 1; }
+          test -f "$REPORT"           || { echo "no report was written"; exit 1; }
+        env:
+          OUTCOME: ${{ steps.report.outcome }}
+          STATUS: ${{ steps.report.outputs.status }}
+          FAILED: ${{ steps.report.outputs.failed }}
+          ERRORS: ${{ steps.report.outputs.errors }}
+          SKIPPED: ${{ steps.report.outputs.skipped }}
+          CODE: ${{ steps.report.outputs.exit-code }}
+          REPORT: ${{ steps.report.outputs.report-file }}
+
+      - name: The artifact went up even though the tests failed
+        uses: actions/download-artifact@v4
+        with:
+          name: self-test-red
+          path: downloaded
+
+      - shell: bash
+        run: test -f downloaded/pytest_html_report.html
+
+  gated:
+    name: a threshold fails a run that pytest called green
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - shell: bash
+        run: bash tests/fixtures/make-project.sh sample pass
+
+      - uses: ./
+        id: report
+        continue-on-error: true
+        with:
+          working-directory: sample
+          tests: tests/
+          upload-artifact: 'false'
+          extra-packages: pytest-cov
+          pytest-args: --cov=src
+          min-coverage: '99.9'
+
+      - shell: bash
+        run: |
+          set -euo pipefail
+
+          test "$OUTCOME" = "failure" || { echo "the coverage gate did not fail the step"; exit 1; }
+          test "$STATUS"  = "PASS"    || { echo "pytest itself should have passed, got '$STATUS'"; exit 1; }
+        env:
+          OUTCOME: ${{ steps.report.outcome }}
+          STATUS: ${{ steps.report.outputs.status }}
+
+  history:
+    name: a second run sees the first one
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - shell: bash
+        run: bash tests/fixtures/make-project.sh sample pass
+
+      - name: First build
+        uses: ./
+        with:
+          working-directory: sample
+          tests: tests/
+          upload-artifact: 'false'
+          job-summary: 'false'
+
+      - name: Second build, into the same folder
+        uses: ./
+        id: second
+        with:
+          working-directory: sample
+          tests: tests/
+          artifact-name: self-test-history
+
+      - name: The first build was archived
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          count="$(find "$REPORT_DIR/archive" -name '*.json' | wc -l | tr -d ' ')"
+          test "$count" -ge 1 || { echo "the archive holds $count builds"; exit 1; }
+        env:
+          REPORT_DIR: ${{ steps.second.outputs.report-dir }}

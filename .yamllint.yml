@@ -1,0 +1,21 @@
+# YAML 1.1 reads a bare `on:` as the boolean true, which is every workflow
+# file ever written. Relax that one rule rather than quoting `on` everywhere.
+extends: default
+
+rules:
+  truthy:
+    allowed-values: ['true', 'false']
+    check-keys: false
+  line-length:
+    # A GitHub expression cannot be wrapped, and action.yml is full of them.
+    max: 200
+    level: warning
+  comments:
+    min-spaces-from-content: 1
+  document-start: disable
+  braces:
+    max-spaces-inside: 1
+
+ignore: |
+  .venv/
+  venv/

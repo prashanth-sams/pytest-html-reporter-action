@@ -1,0 +1,40 @@
+# Point the major tag at the release that was just published, so `@v1` means
+# the newest v1.x.y. Forgetting this is the usual reason a published fix
+# reaches nobody.
+name: release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  major-tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Move the major tag
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+
+          case "$TAG" in
+            v[0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "::notice::$TAG is not a vX.Y.Z tag, leaving the major tag alone"; exit 0 ;;
+          esac
+
+          major="${TAG%%.*}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git tag -f "$major" "$TAG"
+          git push origin "$major" --force
+
+          echo "::notice::$major now points at $TAG"

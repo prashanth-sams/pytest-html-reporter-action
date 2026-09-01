@@ -1,0 +1,90 @@
+{
+  "content": {
+    "suites": {
+      "0": {
+        "suite_name": "tests/test_login.py",
+        "tests": {
+          "0": {
+            "status": "PASS",
+            "message": "",
+            "test_name": "test_login_ok",
+            "rerun": "0",
+            "duration": 1.25
+          },
+          "1": {
+            "status": "FAIL",
+            "message": "AssertionError: expected 200, got 500",
+            "test_name": "test_login_bad_password",
+            "rerun": "1",
+            "duration": 3.5
+          }
+        },
+        "status": {
+          "total_pass": 1,
+          "total_fail": 1,
+          "total_skip": 0,
+          "total_error": 0,
+          "total_xpass": 0,
+          "total_xfail": 0,
+          "total_rerun": 1
+        }
+      },
+      "1": {
+        "suite_name": "tests/test_cart.py",
+        "tests": {
+          "0": {
+            "status": "PASS",
+            "message": "",
+            "test_name": "test_add_item",
+            "rerun": "0",
+            "duration": 0.5
+          },
+          "1": {
+            "status": "SKIP",
+            "message": "needs a payment sandbox",
+            "test_name": "test_checkout",
+            "rerun": "0",
+            "duration": 0.0
+          },
+          "2": {
+            "status": "ERROR",
+            "message": "fixture 'browser' not found",
+            "test_name": "test_wishlist",
+            "rerun": "0",
+            "duration": 0.1
+          }
+        },
+        "status": {
+          "total_pass": 1,
+          "total_fail": 0,
+          "total_skip": 1,
+          "total_error": 1,
+          "total_xpass": 0,
+          "total_xfail": 0,
+          "total_rerun": 0
+        }
+      }
+    }
+  },
+  "date": "September 01, 2026",
+  "start_time": 1788283688.3197272,
+  "total_suite": 2,
+  "status": "FAIL",
+  "status_list": {
+    "pass": "2",
+    "fail": "1",
+    "skip": "1",
+    "error": "1",
+    "xpass": "0",
+    "xfail": "0",
+    "rerun": "1"
+  },
+  "total_tests": "5",
+  "coverage": {
+    "percent": 87.42,
+    "statements": 1200,
+    "covered": 1049,
+    "missing": 151,
+    "branch": true
+  }
+}

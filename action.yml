@@ -1,0 +1,742 @@
+name: pytest-html-reporter
+description: >-
+  Run pytest with pytest-html-reporter and publish the report - a job summary,
+  a sticky PR comment, a downloadable artifact, build history across runs and
+  pass-rate or coverage gates.
+author: Prashanth Sams
+
+branding:
+  icon: bar-chart-2
+  color: purple
+
+inputs:
+  # -- what to run ---------------------------------------------------------
+  tests:
+    description: >-
+      Test paths to hand to pytest, one per line. Leave empty to let pytest
+      pick its own targets from your rootdir configuration.
+    required: false
+    default: ''
+  pytest-args:
+    description: >-
+      Extra arguments appended to the pytest command, parsed the way a shell
+      would parse them (quotes respected). Example: -n auto -m "not slow".
+    required: false
+    default: ''
+  working-directory:
+    description: Directory to run pytest in. Paths are resolved against it.
+    required: false
+    default: '.'
+
+  # -- the environment -----------------------------------------------------
+  python-version:
+    description: >-
+      Python to set up with actions/setup-python before running. Leave empty
+      to use whatever Python is already on the runner.
+    required: false
+    default: ''
+  install:
+    description: >-
+      Install pytest-html-reporter before running. Set to false when your own
+      requirements file already pins it.
+    required: false
+    default: 'true'
+  plugin-version:
+    description: >-
+      Version specifier for the plugin, e.g. 0.3.8 or >=0.3.8. Empty installs
+      the latest release. Ignored when install is false.
+    required: false
+    default: ''
+  requirements:
+    description: >-
+      Requirements file to install before running, e.g. requirements.txt.
+      Resolved against working-directory.
+    required: false
+    default: ''
+  extra-packages:
+    description: >-
+      Further pip packages to install, whitespace separated, e.g.
+      "pytest-xdist pytest-cov".
+    required: false
+    default: ''
+
+  # -- the report ----------------------------------------------------------
+  report-path:
+    description: >-
+      Where the report goes, passed to --html-report. A value holding .html
+      names the file, anything else names a directory. strftime placeholders
+      (%Y, %m, %d, %H, %M) are expanded once, before the run starts.
+    required: false
+    default: 'report'
+  title:
+    description: Report title, passed to --title. Empty keeps the plugin default.
+    required: false
+    default: ''
+  environment:
+    description: >-
+      Name of the environment under test, passed to --environment, e.g.
+      staging or prod.
+    required: false
+    default: ''
+  build-info:
+    description: >-
+      Extra KEY=VALUE details shown in the report, one per line. Lines
+      starting with # are ignored.
+    required: false
+    default: ''
+  report-links:
+    description: >-
+      Extra side-nav links, one LABEL=URL per line, passed to --report-link.
+    required: false
+    default: ''
+  archive-count:
+    description: Maximum builds kept in the Archives section (--archive-count).
+    required: false
+    default: ''
+  archive-days:
+    description: Keep only builds from the last N days (--archive-days).
+    required: false
+    default: ''
+  archive-since:
+    description: >-
+      Delete archived builds older than this date (--archive-since), given as
+      YYYY-MM-DD or 'YYYY-MM-DD HH:MM'.
+    required: false
+    default: ''
+  report-logs:
+    description: >-
+      Whose captured stdout, stderr and logging to keep - all, failed or none.
+    required: false
+    default: ''
+  report-log-limit:
+    description: Maximum characters of captured output kept per test; 0 keeps everything.
+    required: false
+    default: ''
+  report-attachments:
+    description: Whose attachments to keep - all, failed or none.
+    required: false
+    default: ''
+  report-attachment-limit:
+    description: Maximum characters kept per attached payload; 0 keeps everything.
+    required: false
+    default: ''
+  report-steps:
+    description: Whose test steps to keep - all, failed or none.
+    required: false
+    default: ''
+  report-step-limit:
+    description: Maximum steps kept per test; 0 keeps every one.
+    required: false
+    default: ''
+  report-coverage:
+    description: Whether to build the Coverage tab - auto or none.
+    required: false
+    default: ''
+  report-coverage-file:
+    description: >-
+      Read coverage from this file - a coverage.json, a Cobertura coverage.xml
+      or a .coverage data file - instead of looking for one.
+    required: false
+    default: ''
+  report-coverage-limit:
+    description: Maximum files listed on the Coverage tab; 0 lists every one.
+    required: false
+    default: ''
+  report-open:
+    description: >-
+      Whether to open the finished report in a browser - auto, always or none.
+      Leave empty: the plugin's own default already declines to open one on a
+      runner. Only a self-hosted runner with a desktop has a use for this.
+    required: false
+    default: ''
+
+  # -- publishing ----------------------------------------------------------
+  job-summary:
+    description: Write the run's summary to the workflow's job summary page.
+    required: false
+    default: 'true'
+  summary-title:
+    description: Heading used for the job summary and the PR comment.
+    required: false
+    default: 'pytest-html-reporter'
+  failure-limit:
+    description: Maximum failures listed in the summary and the comment.
+    required: false
+    default: '10'
+  suite-limit:
+    description: Maximum suites listed in the summary and the comment.
+    required: false
+    default: '20'
+  slowest-limit:
+    description: How many of the slowest tests to list; 0 lists none.
+    required: false
+    default: '5'
+  report-url:
+    description: >-
+      Link to the published report, shown in the summary and the comment - for
+      instance your GitHub Pages URL.
+    required: false
+    default: ''
+
+  comment:
+    description: >-
+      Post the summary as a sticky comment on the pull request, updating the
+      same comment on every run instead of piling new ones up.
+    required: false
+    default: 'false'
+  comment-mode:
+    description: When to comment - always, or on-failure.
+    required: false
+    default: 'always'
+  pr-number:
+    description: >-
+      Pull request to comment on. Only needed when the event does not carry
+      one - a workflow_run job, say. Empty uses the event's own number.
+    required: false
+    default: ''
+  github-token:
+    description: >-
+      Token used to post the PR comment. Needs pull-requests: write. A
+      pull_request run from a fork gets a read-only token and cannot comment.
+    required: false
+    default: ${{ github.token }}
+
+  upload-artifact:
+    description: Upload the report directory as a workflow artifact.
+    required: false
+    default: 'true'
+  artifact-name:
+    description: Name of the uploaded artifact.
+    required: false
+    default: 'pytest-html-report'
+  artifact-retention-days:
+    description: Days to keep the artifact. Empty uses the repository default.
+    required: false
+    default: ''
+  artifact-include-history:
+    description: >-
+      Include the archive/ folder of past builds in the artifact. Set to false
+      to upload only the current report.
+    required: false
+    default: 'true'
+  artifact-if-no-files-found:
+    description: What upload-artifact does when nothing matched - warn, error or ignore.
+    required: false
+    default: 'warn'
+  artifact-overwrite:
+    description: >-
+      Replace an artifact of the same name instead of failing. A matrix is
+      better served by giving each job its own artifact-name.
+    required: false
+    default: 'false'
+
+  pages-artifact:
+    description: >-
+      Also upload the report as a GitHub Pages artifact, ready for a following
+      job to deploy with actions/deploy-pages.
+    required: false
+    default: 'false'
+
+  history:
+    description: >-
+      Carry the archive/ folder between runs with actions/cache, so the
+      Trends, Archives and Analytics tabs have more than one build to show.
+    required: false
+    default: 'false'
+  history-key:
+    description: Cache key prefix used for the build history.
+    required: false
+    default: 'pytest-html-reporter-history'
+
+  # -- gates ---------------------------------------------------------------
+  fail-on-error:
+    description: >-
+      Fail the job when pytest fails. Set to false to always go green and
+      decide with the outputs yourself.
+    required: false
+    default: 'true'
+  fail-on-empty:
+    description: >-
+      Fail the job when pytest collects no tests at all. Left on, because a
+      mistyped -k that quietly produces a green run is worse than a red one.
+    required: false
+    default: 'true'
+  min-pass-rate:
+    description: >-
+      Fail the job when the pass rate falls below this percentage, e.g. 95.
+      Empty applies no threshold.
+    required: false
+    default: ''
+  min-coverage:
+    description: >-
+      Fail the job when coverage falls below this percentage, e.g. 80. Empty
+      applies no threshold.
+    required: false
+    default: ''
+
+outputs:
+  status:
+    description: PASS, FAIL, or UNKNOWN when no report was produced.
+    value: ${{ steps.summarize.outputs.status }}
+  total:
+    description: Tests executed - passes, failures, errors, skips, xpasses and xfails.
+    value: ${{ steps.summarize.outputs.total }}
+  passed:
+    description: Tests that passed.
+    value: ${{ steps.summarize.outputs.passed }}
+  failed:
+    description: Tests that failed.
+    value: ${{ steps.summarize.outputs.failed }}
+  errors:
+    description: Tests that errored.
+    value: ${{ steps.summarize.outputs.errors }}
+  skipped:
+    description: Tests that were skipped.
+    value: ${{ steps.summarize.outputs.skipped }}
+  xpassed:
+    description: Tests that passed while expected to fail.
+    value: ${{ steps.summarize.outputs.xpassed }}
+  xfailed:
+    description: Tests that failed as expected.
+    value: ${{ steps.summarize.outputs.xfailed }}
+  rerun:
+    description: Rerun attempts recorded across the run.
+    value: ${{ steps.summarize.outputs.rerun }}
+  suites:
+    description: Test suites in the run.
+    value: ${{ steps.summarize.outputs.suites }}
+  pass-rate:
+    description: >-
+      passed / (passed + failed + errors), as a percentage. Empty when nothing
+      decisive ran.
+    value: ${{ steps.summarize.outputs.pass-rate }}
+  coverage:
+    description: Coverage percentage, or empty when the run produced none.
+    value: ${{ steps.summarize.outputs.coverage }}
+  tests-duration:
+    description: >-
+      Summed test durations in seconds. This is what the report records - the
+      run's own wall clock is not written to output.json - so it leaves out
+      collection, session fixtures and the gaps between tests.
+    value: ${{ steps.summarize.outputs.tests-duration }}
+  wall-clock:
+    description: Seconds the pytest step took, measured by this action.
+    value: ${{ steps.summarize.outputs.wall-clock }}
+  exit-code:
+    description: The exit code pytest returned.
+    value: ${{ steps.run.outputs.exit-code }}
+  report-file:
+    description: Absolute path of the generated HTML report.
+    value: ${{ steps.resolve.outputs.report-file }}
+  report-dir:
+    description: Absolute path of the directory holding the report.
+    value: ${{ steps.resolve.outputs.report-dir }}
+  json-path:
+    description: Absolute path of the run's output.json.
+    value: ${{ steps.resolve.outputs.json-path }}
+  summary:
+    description: The markdown summary, for reuse in a later step.
+    value: ${{ steps.summarize.outputs.summary }}
+  artifact-id:
+    description: Id of the uploaded artifact, when one was uploaded.
+    value: ${{ steps.upload.outputs.artifact-id }}
+  artifact-url:
+    description: URL of the uploaded artifact, when one was uploaded.
+    value: ${{ steps.upload.outputs.artifact-url }}
+
+runs:
+  using: composite
+  steps:
+    - name: Check the inputs
+      id: check
+      shell: bash
+      env:
+        PHR_ACTION_PATH: ${{ github.action_path }}
+        PHR_REPORT_LOGS: ${{ inputs.report-logs }}
+        PHR_REPORT_ATTACHMENTS: ${{ inputs.report-attachments }}
+        PHR_REPORT_STEPS: ${{ inputs.report-steps }}
+        PHR_REPORT_COVERAGE: ${{ inputs.report-coverage }}
+        PHR_REPORT_OPEN: ${{ inputs.report-open }}
+        PHR_COMMENT_MODE: ${{ inputs.comment-mode }}
+        PHR_WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        PHR_REPORT_LOG_LIMIT: ${{ inputs.report-log-limit }}
+        PHR_REPORT_ATTACHMENT_LIMIT: ${{ inputs.report-attachment-limit }}
+        PHR_REPORT_STEP_LIMIT: ${{ inputs.report-step-limit }}
+        PHR_REPORT_COVERAGE_LIMIT: ${{ inputs.report-coverage-limit }}
+        PHR_REPORT_COVERAGE_FILE: ${{ inputs.report-coverage-file }}
+      run: |
+        set -euo pipefail
+
+        fail() { echo "::error title=pytest-html-reporter::$1"; exit 1; }
+
+        one_of() {
+          local name="$1" value="$2"; shift 2
+          [ -z "$value" ] && return 0
+          for allowed in "$@"; do [ "$value" = "$allowed" ] && return 0; done
+          fail "$name must be one of: $* - got '$value'"
+        }
+
+        one_of report-logs        "$PHR_REPORT_LOGS"        all failed none
+        one_of report-attachments "$PHR_REPORT_ATTACHMENTS" all failed none
+        one_of report-steps       "$PHR_REPORT_STEPS"       all failed none
+        one_of report-coverage    "$PHR_REPORT_COVERAGE"    auto none
+        one_of report-open        "$PHR_REPORT_OPEN"        auto always none
+        one_of comment-mode       "$PHR_COMMENT_MODE"       always on-failure
+
+        # The plugin clamps a negative limit to 0, and 0 means "no limit" for
+        # every one of these. Somebody writing -1 meant the opposite.
+        limit() {
+          local name="$1" value="$2"
+          [ -z "$value" ] && return 0
+          case "$value" in
+            ''|*[!0-9-]*) fail "$name must be a whole number - got '$value'" ;;
+          esac
+          case "$value" in
+            -*) fail "$name cannot be negative. The plugin reads a negative limit as 0, and 0 means no limit at all - which is the opposite of what '$value' looks like it asks for." ;;
+          esac
+        }
+
+        limit report-log-limit        "$PHR_REPORT_LOG_LIMIT"
+        limit report-attachment-limit "$PHR_REPORT_ATTACHMENT_LIMIT"
+        limit report-step-limit       "$PHR_REPORT_STEP_LIMIT"
+        limit report-coverage-limit   "$PHR_REPORT_COVERAGE_LIMIT"
+
+        [ -d "$PHR_WORKING_DIRECTORY" ] || fail "working-directory '$PHR_WORKING_DIRECTORY' does not exist"
+
+
+    - name: Set up Python
+      if: inputs.python-version != ''
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Find the interpreter
+      id: python
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        # setup-python puts "python" on PATH; a runner without it has only
+        # "python3". Settle on one name here so every later step agrees.
+        for candidate in python python3; do
+          if command -v "$candidate" >/dev/null 2>&1; then
+            echo "bin=$candidate" >> "$GITHUB_OUTPUT"
+            "$candidate" --version
+            exit 0
+          fi
+        done
+
+        echo "::error title=pytest-html-reporter::no python on PATH - add actions/setup-python before this action, or set its python-version input"
+        exit 1
+
+    - name: Install pytest-html-reporter
+      if: inputs.install == 'true' || inputs.requirements != '' || inputs.extra-packages != ''
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        PHR_INSTALL: ${{ inputs.install }}
+        PHR_PLUGIN_VERSION: ${{ inputs.plugin-version }}
+        PHR_REQUIREMENTS: ${{ inputs.requirements }}
+        PHR_EXTRA_PACKAGES: ${{ inputs.extra-packages }}
+        PHR_PYTHON: ${{ steps.python.outputs.bin }}
+      run: |
+        set -euo pipefail
+
+        "$PHR_PYTHON" -m pip install --upgrade pip >/dev/null
+
+        if [ -n "$PHR_REQUIREMENTS" ]; then
+          echo "::group::pip install -r $PHR_REQUIREMENTS"
+          "$PHR_PYTHON" -m pip install -r "$PHR_REQUIREMENTS"
+          echo "::endgroup::"
+        fi
+
+        if [ "$PHR_INSTALL" = "true" ]; then
+          spec="pytest-html-reporter"
+          case "$PHR_PLUGIN_VERSION" in
+            "")            ;;
+            [0-9]*)        spec="pytest-html-reporter==$PHR_PLUGIN_VERSION" ;;
+            *)             spec="pytest-html-reporter$PHR_PLUGIN_VERSION" ;;
+          esac
+
+          echo "::group::pip install $spec"
+          "$PHR_PYTHON" -m pip install "$spec"
+          echo "::endgroup::"
+        fi
+
+        if [ -n "$PHR_EXTRA_PACKAGES" ]; then
+          echo "::group::pip install $PHR_EXTRA_PACKAGES"
+          # shellcheck disable=SC2086
+          "$PHR_PYTHON" -m pip install $PHR_EXTRA_PACKAGES
+          echo "::endgroup::"
+        fi
+
+        "$PHR_PYTHON" -c "import pytest_html_reporter, pytest; print('pytest', pytest.__version__)" \
+          || echo "::warning title=pytest-html-reporter::the plugin does not import in this environment - the run will produce no report"
+
+    - name: Work out where the report goes
+      id: resolve
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        PHR_REPORT_PATH: ${{ inputs.report-path }}
+        PHR_HISTORY: ${{ inputs.history }}
+        PHR_ACTION_PATH: ${{ github.action_path }}
+        PHR_PYTHON: ${{ steps.python.outputs.bin }}
+      run: |
+        set -euo pipefail
+        "$PHR_PYTHON" "$PHR_ACTION_PATH/scripts/phr.py" resolve \
+          --path "$PHR_REPORT_PATH" --history "$PHR_HISTORY"
+
+    # A build only joins the archive when the *next* run rotates its
+    # output.json in, so the cache has to carry that json as well as the
+    # archive itself. Carrying only archive/ accumulates nothing at all.
+    - name: Restore build history
+      if: inputs.history == 'true'
+      uses: actions/cache/restore@v4
+      with:
+        path: |
+          ${{ steps.resolve.outputs.archive-dir }}
+          ${{ steps.resolve.outputs.json-path }}
+        key: ${{ inputs.history-key }}-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}-${{ github.run_attempt }}
+        restore-keys: |
+          ${{ inputs.history-key }}-${{ runner.os }}-${{ github.ref_name }}-
+          ${{ inputs.history-key }}-${{ runner.os }}-
+
+    - name: Run pytest
+      id: run
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        PHR_TESTS: ${{ inputs.tests }}
+        PHR_PYTEST_ARGS: ${{ inputs.pytest-args }}
+        PHR_TITLE: ${{ inputs.title }}
+        PHR_ENVIRONMENT: ${{ inputs.environment }}
+        PHR_BUILD_INFO: ${{ inputs.build-info }}
+        PHR_REPORT_LINKS: ${{ inputs.report-links }}
+        PHR_ARCHIVE_COUNT: ${{ inputs.archive-count }}
+        PHR_ARCHIVE_DAYS: ${{ inputs.archive-days }}
+        PHR_ARCHIVE_SINCE: ${{ inputs.archive-since }}
+        PHR_REPORT_LOGS: ${{ inputs.report-logs }}
+        PHR_REPORT_LOG_LIMIT: ${{ inputs.report-log-limit }}
+        PHR_REPORT_ATTACHMENTS: ${{ inputs.report-attachments }}
+        PHR_REPORT_ATTACHMENT_LIMIT: ${{ inputs.report-attachment-limit }}
+        PHR_REPORT_STEPS: ${{ inputs.report-steps }}
+        PHR_REPORT_STEP_LIMIT: ${{ inputs.report-step-limit }}
+        PHR_REPORT_COVERAGE: ${{ inputs.report-coverage }}
+        PHR_REPORT_COVERAGE_FILE: ${{ inputs.report-coverage-file }}
+        PHR_REPORT_COVERAGE_LIMIT: ${{ inputs.report-coverage-limit }}
+        PHR_REPORT_OPEN: ${{ inputs.report-open }}
+        PHR_HTML_REPORT: ${{ steps.resolve.outputs.html-report }}
+        PHR_REPORT_DIR: ${{ steps.resolve.outputs.report-dir }}
+        PHR_REPORT_NAME: ${{ steps.resolve.outputs.report-name }}
+        PHR_ACTION_PATH: ${{ github.action_path }}
+        PHR_PYTHON: ${{ steps.python.outputs.bin }}
+      run: |
+        set -uo pipefail
+
+        # Ready whatever the cache restored, and clear the last run's leavings.
+        "$PHR_PYTHON" "$PHR_ACTION_PATH/scripts/phr.py" prime \
+          --report-dir "$PHR_REPORT_DIR" --report-name "$PHR_REPORT_NAME"
+
+        # Which report flags this plugin actually has. A user is free to pin
+        # an older version, and an unknown flag does not degrade a feature -
+        # argparse aborts the whole run before a single test is collected.
+        helpfile="$(mktemp)"
+        set +e
+        "$PHR_PYTHON" -m pytest --help > "$helpfile" 2>&1
+        set -e
+
+        argfile="$(mktemp)"
+        "$PHR_PYTHON" "$PHR_ACTION_PATH/scripts/phr.py" args \
+          --html-report "$PHR_HTML_REPORT" --out "$argfile" --help-text "$helpfile"
+        rm -f "$helpfile"
+
+        args=()
+        while IFS= read -r -d '' arg; do args+=("$arg"); done < "$argfile"
+        rm -f "$argfile"
+
+        # macOS runners ship bash 3.2, where "${empty[@]}" under -u is an
+        # unbound variable rather than nothing. The list always holds at least
+        # --html-report, so this is a guard rather than a live case.
+        [ ${#args[@]} -gt 0 ] || args=("--html-report=$PHR_HTML_REPORT")
+
+        logfile="$RUNNER_TEMP/pytest-html-reporter.log"
+
+        started="$(date +%s)"
+        echo "::group::pytest"
+        # A hosted runner starts this script with -e already set, and tests
+        # that fail are the ordinary case here rather than an accident, so the
+        # exit code is captured instead of being allowed to end the step. The
+        # log is kept as well: it holds the one line that explains an exit
+        # code 4, which is a refused argument rather than a failing test.
+        set +e
+        "$PHR_PYTHON" -m pytest "${args[@]}" 2>&1 | tee "$logfile"
+        code=${PIPESTATUS[0]}
+        set -e
+        echo "::endgroup::"
+        finished="$(date +%s)"
+
+        {
+          echo "exit-code=$code"
+          echo "wall-clock=$((finished - started))"
+          echo "log=$logfile"
+        } >> "$GITHUB_OUTPUT"
+
+        echo "pytest exited with $code after $((finished - started))s"
+
+    - name: Save build history
+      if: inputs.history == 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: |
+          ${{ steps.resolve.outputs.archive-dir }}
+          ${{ steps.resolve.outputs.json-path }}
+        key: ${{ inputs.history-key }}-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+    - name: Upload the report
+      id: upload
+      if: inputs.upload-artifact == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: |
+          ${{ steps.resolve.outputs.report-dir }}
+          ${{ inputs.artifact-include-history != 'true' && format('!{0}/archive', steps.resolve.outputs.report-dir) || '' }}
+        retention-days: ${{ inputs.artifact-retention-days }}
+        if-no-files-found: ${{ inputs.artifact-if-no-files-found }}
+        overwrite: ${{ inputs.artifact-overwrite }}
+
+    - name: Upload the report as a Pages artifact
+      if: inputs.pages-artifact == 'true'
+      uses: actions/upload-pages-artifact@v3
+      with:
+        path: ${{ steps.resolve.outputs.report-dir }}
+
+    - name: Summarise the run
+      id: summarize
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        PHR_ACTION_PATH: ${{ github.action_path }}
+        PHR_JSON: ${{ steps.resolve.outputs.json-path }}
+        PHR_TITLE: ${{ inputs.summary-title }}
+        PHR_EXIT_CODE: ${{ steps.run.outputs.exit-code }}
+        PHR_WALL_CLOCK: ${{ steps.run.outputs.wall-clock }}
+        PHR_JOB_SUMMARY: ${{ inputs.job-summary }}
+        PHR_FAILURE_LIMIT: ${{ inputs.failure-limit }}
+        PHR_SUITE_LIMIT: ${{ inputs.suite-limit }}
+        PHR_SLOWEST_LIMIT: ${{ inputs.slowest-limit }}
+        PHR_ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
+        PHR_REPORT_URL: ${{ inputs.report-url }}
+        PHR_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        PHR_FAIL_ON_ERROR: ${{ inputs.fail-on-error }}
+        PHR_FAIL_ON_EMPTY: ${{ inputs.fail-on-empty }}
+        PHR_PYTEST_LOG: ${{ steps.run.outputs.log }}
+        PHR_MIN_PASS_RATE: ${{ inputs.min-pass-rate }}
+        PHR_MIN_COVERAGE: ${{ inputs.min-coverage }}
+        PHR_REPORT_COVERAGE_FILE: ${{ inputs.report-coverage-file }}
+        PHR_COMMENT_BODY: ${{ runner.temp }}/pytest-html-reporter-comment.md
+        PHR_PYTHON: ${{ steps.python.outputs.bin }}
+      run: |
+        set -uo pipefail
+
+        # summarize exits non-zero when a gate is not met. That verdict is
+        # read back out of its gate-passed output by the last step, so it must
+        # not end this one - the artifact and the comment come after it.
+        set +e
+        "$PHR_PYTHON" "$PHR_ACTION_PATH/scripts/phr.py" summarize \
+          --json "$PHR_JSON" \
+          --title "$PHR_TITLE" \
+          --exit-code "$PHR_EXIT_CODE" \
+          --wall-clock "$PHR_WALL_CLOCK" \
+          --job-summary "$PHR_JOB_SUMMARY" \
+          --failure-limit "$PHR_FAILURE_LIMIT" \
+          --suite-limit "$PHR_SUITE_LIMIT" \
+          --slowest-limit "$PHR_SLOWEST_LIMIT" \
+          --artifact-url "$PHR_ARTIFACT_URL" \
+          --pages-url "$PHR_REPORT_URL" \
+          --run-url "$PHR_RUN_URL" \
+          --fail-on-error "$PHR_FAIL_ON_ERROR" \
+          --min-pass-rate "$PHR_MIN_PASS_RATE" \
+          --min-coverage "$PHR_MIN_COVERAGE" \
+          --coverage-file "$PHR_REPORT_COVERAGE_FILE" \
+          --pytest-log "$PHR_PYTEST_LOG" \
+          --fail-on-empty "$PHR_FAIL_ON_EMPTY" \
+          --comment-body "$PHR_COMMENT_BODY"
+        set -e
+
+        echo "comment-body=$PHR_COMMENT_BODY" >> "$GITHUB_OUTPUT"
+
+    - name: Comment on the pull request
+      if: >-
+        inputs.comment == 'true'
+        && (github.event_name == 'pull_request' || inputs.pr-number != '')
+        && (inputs.comment-mode == 'always' || steps.summarize.outputs.status != 'PASS')
+      uses: actions/github-script@v7
+      with:
+        github-token: ${{ inputs.github-token }}
+        script: |
+          const fs = require('fs');
+
+          const marker = '<!-- pytest-html-reporter-action -->';
+          const path = process.env.PHR_COMMENT_BODY;
+
+          if (!fs.existsSync(path)) {
+            core.warning('no comment body was produced, so nothing was posted');
+            return;
+          }
+
+          const body = fs.readFileSync(path, 'utf8');
+          const issue_number = Number(process.env.PHR_PR_NUMBER)
+            || context.payload.pull_request?.number
+            || context.issue.number;
+
+          if (!issue_number) {
+            core.warning('this event carries no pull request to comment on');
+            return;
+          }
+
+          try {
+            const existing = await github.paginate(github.rest.issues.listComments, {
+              ...context.repo, issue_number, per_page: 100,
+            });
+
+            const mine = existing.find((comment) => comment.body?.includes(marker));
+
+            if (mine) {
+              await github.rest.issues.updateComment({
+                ...context.repo, comment_id: mine.id, body,
+              });
+              core.info(`updated comment ${mine.id}`);
+            } else {
+              const made = await github.rest.issues.createComment({
+                ...context.repo, issue_number, body,
+              });
+              core.info(`created comment ${made.data.id}`);
+            }
+          } catch (error) {
+            // A pull_request run from a fork is handed a read-only token, and
+            // a report is not worth turning that run red over.
+            core.warning(
+              `could not post the comment: ${error.message}. A pull_request run ` +
+              `from a fork has a read-only token; grant pull-requests: write on ` +
+              `runs that can have it.`);
+          }
+      env:
+        PHR_COMMENT_BODY: ${{ steps.summarize.outputs.comment-body }}
+        PHR_PR_NUMBER: ${{ inputs.pr-number }}
+
+    - name: Decide the job
+      shell: bash
+      env:
+        PHR_GATE_PASSED: ${{ steps.summarize.outputs.gate-passed }}
+        PHR_GATE_REASONS: ${{ steps.summarize.outputs.gate-reasons }}
+      run: |
+        set -euo pipefail
+
+        if [ "$PHR_GATE_PASSED" = "false" ]; then
+          echo "::error title=pytest-html-reporter::$PHR_GATE_REASONS"
+          exit 1
+        fi
+
+        echo "pytest-html-reporter: nothing to fail on."

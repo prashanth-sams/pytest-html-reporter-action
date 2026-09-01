@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.tox/
+
+# pytest / coverage
+.pytest_cache/
+.coverage
+/coverage.json
+/coverage.xml
+htmlcov/
+
+# What a run of this repo's own tests leaves behind. The plugin is installed
+# in the test environment, so it writes a report into the working directory -
+# anchored to the root so tests/fixtures/output.json is still tracked.
+/report/
+/reports/
+/pytest_html_report.html
+/output.json
+/archive/
+/pytest_screenshots/
+/.shellcheck/
+
+# editors / OS
+.DS_Store
+.idea/
+.vscode/

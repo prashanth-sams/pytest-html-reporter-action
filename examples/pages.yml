@@ -1,0 +1,43 @@
+# Publishing the report to GitHub Pages.
+#
+# The deploy has to be its own job: it needs the github-pages environment
+# and its own permissions, neither of which an action can grant itself.
+name: tests
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: prashanth-sams/pytest-html-reporter-action@v1
+        with:
+          tests: tests/
+          pages-artifact: 'true'
+          history: 'true'
+          # The report is one page, so name it index.html and Pages serves
+          # it at the root of the site.
+          report-path: report/index.html
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+
+    permissions:
+      pages: write
+      id-token: write
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+
+    steps:
+      - uses: actions/deploy-pages@v4
+        id: deploy

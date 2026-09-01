@@ -1,0 +1,33 @@
+# Deciding for yourself what a failing run means.
+name: tests
+
+on: [push]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: prashanth-sams/pytest-html-reporter-action@v1
+        id: report
+        with:
+          tests: tests/
+          # Let a red run through, and judge it below.
+          fail-on-error: 'false'
+
+      - name: A few flakes are survivable; a collapse is not
+        if: steps.report.outputs.status == 'FAIL'
+        run: |
+          echo "pass rate: $PASS_RATE%  ($FAILED failed of $TOTAL)"
+
+          if [ "${PASS_RATE%%.*}" -lt 90 ]; then
+            echo "::error::pass rate $PASS_RATE% - this is not flakiness"
+            exit 1
+          fi
+
+          echo "::warning::$FAILED failing, pass rate still $PASS_RATE% - letting it through"
+        env:
+          PASS_RATE: ${{ steps.report.outputs.pass-rate }}
+          FAILED: ${{ steps.report.outputs.failed }}
+          TOTAL: ${{ steps.report.outputs.total }}

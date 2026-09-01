@@ -1,0 +1,42 @@
+# Commenting on a pull request that came from a fork.
+#
+# A `pull_request` run from a fork is handed a read-only token on purpose:
+# the code being tested is not yours. So the run that executes the tests
+# writes the report and the PR number as artifacts, and a second workflow -
+# triggered by `workflow_run`, running from your default branch, with a
+# writable token and none of the fork's code - posts the comment.
+name: tests
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: prashanth-sams/pytest-html-reporter-action@v1
+        id: report
+        with:
+          tests: tests/
+          comment: 'false'          # nothing to comment with, here
+          artifact-name: pytest-html-report
+
+      - name: Keep the summary and the PR number for the next workflow
+        if: always()
+        run: |
+          mkdir -p comment
+          printf '%s' "${{ github.event.number }}" > comment/pr-number
+          printf '%s' "$SUMMARY" > comment/body.md
+        env:
+          SUMMARY: ${{ steps.report.outputs.summary }}
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pytest-html-report-comment
+          path: comment/

@@ -1,0 +1,21 @@
+# The Test Coverage tab, and a floor under it.
+#
+# Nothing here is special: install pytest-cov, pass --cov, and the plugin
+# reads the coverage the run just measured.
+name: tests
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: prashanth-sams/pytest-html-reporter-action@v1
+        with:
+          python-version: '3.12'
+          extra-packages: pytest-cov
+          tests: tests/
+          pytest-args: --cov=src --cov-branch
+          min-coverage: '80'
