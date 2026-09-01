@@ -4,10 +4,10 @@
 # The repository is called ...-action only because the plugin already owns
 # the shorter name. tests/test_action_yml.py holds this to it.
 name: pytest-html-reporter
-description: >-
-  Run pytest with pytest-html-reporter and publish the report - a job summary,
-  a sticky PR comment, a downloadable artifact, build history across runs and
-  pass-rate or coverage gates.
+# The Marketplace refuses a description of 125 characters or more, and it is
+# one line rather than folded so that what is written here is exactly what is
+# counted. tests/test_action_yml.py holds it under the limit.
+description: "Run pytest and publish its HTML report: job summary, sticky PR comment, artifact, history, pass-rate gates."
 author: Prashanth Sams
 
 # A name from the Feather icon set and one of eight colours - not a file.

@@ -95,6 +95,21 @@ def test_the_branding_is_one_the_marketplace_takes(action):
     assert re.match(r"^[a-z0-9-]+$", branding["icon"])
 
 
+# The Marketplace rejects a release whose description reaches this, and it
+# tells you at publish time rather than at review time.
+DESCRIPTION_LIMIT = 125
+
+
+def test_the_description_fits_the_marketplace(action):
+    description = action["description"]
+
+    assert len(description) < DESCRIPTION_LIMIT, (
+        "the Marketplace refuses a description of %d characters or more; this "
+        "one is %d" % (DESCRIPTION_LIMIT, len(description)))
+    assert description.strip() == description
+    assert "\n" not in description
+
+
 def test_the_action_is_named_for_the_plugin(action):
     """The name the Marketplace lists, and the one people search for.
 
