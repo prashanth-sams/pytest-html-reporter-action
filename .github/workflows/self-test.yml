@@ -189,3 +189,75 @@ jobs:
           test "$count" -ge 1 || { echo "the archive holds $count builds"; exit 1; }
         env:
           REPORT_DIR: ${{ steps.second.outputs.report-dir }}
+
+  compared:
+    name: a run is compared with the build before it
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - shell: bash
+        run: bash tests/fixtures/make-project.sh baseline pass
+
+      - name: The build everything is measured against
+        uses: ./
+        with:
+          working-directory: baseline
+          tests: tests/
+          upload-artifact: 'false'
+          job-summary: 'false'
+          annotations: 'false'
+
+      - shell: bash
+        run: bash tests/fixtures/make-project.sh sample fail
+
+      # baseline-json rather than the artifact this action would find on its
+      # own: the fetch needs a successful earlier run of this same workflow on
+      # another branch, which a pull request checking itself does not have.
+      # What is being held here is the comparison, not the download.
+      - name: The run that broke it
+        uses: ./
+        id: report
+        continue-on-error: true
+        with:
+          working-directory: sample
+          tests: tests/
+          artifact-name: self-test-compared
+          report-url: https://example.test/report/
+          baseline-json: ${{ github.workspace }}/baseline/report/output.json
+
+      - name: The comparison says what this run changed
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test "$FOUND" = "true" || { echo "no baseline was read"; exit 1; }
+          test "$NEW"   = "2"    || { echo "new-failures was '$NEW'"; exit 1; }
+          test "$FIXED" = "0"    || { echo "fixed was '$FIXED'"; exit 1; }
+          test "$STILL" = "0"    || { echo "still-failing was '$STILL'"; exit 1; }
+          test "$FLAKY" = "0"    || { echo "flaky was '$FLAKY'"; exit 1; }
+
+          case "$DELTA" in
+            -*) ;;
+            *) echo "the pass rate fell, and pass-rate-delta says '$DELTA'"; exit 1 ;;
+          esac
+
+          case "$SUMMARY" in
+            *"Compared with"*) ;;
+            *) echo "the summary carries no comparison"; exit 1 ;;
+          esac
+
+          # The anchors are read back out of the HTML the plugin wrote, so
+          # this is what catches the report changing the shape of its rows.
+          case "$SUMMARY" in
+            *'href="https://example.test/report/#test-'*) ;;
+            *) echo "no failure links to its own row in the report"; exit 1 ;;
+          esac
+        env:
+          FOUND: ${{ steps.report.outputs.baseline-found }}
+          NEW: ${{ steps.report.outputs.new-failures }}
+          FIXED: ${{ steps.report.outputs.fixed }}
+          STILL: ${{ steps.report.outputs.still-failing }}
+          FLAKY: ${{ steps.report.outputs.flaky }}
+          DELTA: ${{ steps.report.outputs.pass-rate-delta }}
+          SUMMARY: ${{ steps.report.outputs.summary }}

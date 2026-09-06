@@ -1,6 +1,6 @@
 # How it works
 
-The action is a composite: thirteen steps in `action.yml`, and one stdlib-only
+The action is a composite: fourteen steps in `action.yml`, and one stdlib-only
 Python helper, `scripts/phr.py`, that does the thinking.
 
 ```
@@ -14,7 +14,9 @@ Run pytest              prime, probe, run, capture the exit code
 Save build history      actions/cache/save      (history: true)
 Upload the report       actions/upload-artifact
 Upload a Pages artifact actions/upload-pages-artifact  (pages-artifact: true)
-Summarise the run       output.json -> outputs, job summary, comment body
+Find a baseline         actions/github-script   (compare: auto)
+Summarise the run       output.json -> outputs, job summary, comment body,
+                        annotations, and what changed since the baseline
 Comment                 actions/github-script   (comment: true)
 Decide the job          go red, or do not
 ```
@@ -61,6 +63,54 @@ quietly replaces its predecessor and the archive stays empty for ever.
 reads the archive without guarding the read, so a single truncated file raises
 inside `pytest_terminal_summary` and no report is written at all — and a
 restored cache is exactly where such a file comes from.
+
+## Why the baseline is an artifact rather than a store
+
+Comparing a run with the base branch needs a copy of what the base branch did.
+Keeping one would mean a cache, a branch, a gist or a service — something to
+write, to expire, to get out of step with the branch it claims to describe.
+
+There is already a copy: the report artifact this action uploaded on the last
+successful run of this same workflow over there. So the comparison asks the API
+which run that was, downloads the artifact it left, and reads the `output.json`
+out of the zip. Nothing is stored, nothing expires that GitHub was not already
+expiring, and a repository that has never run the action simply has no baseline
+and is told so.
+
+It costs one permission — `actions: read`, to list and download another run's
+artifacts — and every failure along the way is a warning. A comparison is a
+nicety on top of the report; a repository that has not granted the permission
+should still get the report.
+
+Where there is no base branch to reach and `history` is on, the build the cache
+restored stands in: it is this branch's previous run, and `prime` copies it
+aside before pytest overwrites it.
+
+## Why the anchors are read back out of the report
+
+Each failure in the summary links to that test's own row in the published
+report. The row's id is built from the test's **node id** — and `output.json`
+records the suite and the test name, not the node id. For a test inside a class
+those are different: the report lists `test_login` where pytest wants
+`TestAuth::test_login`, and an id derived from the listed name resolves to
+nothing.
+
+So the ids are read back out of the HTML the plugin has just written, matched
+to a run by the suite-and-test index each row carries. An id that is not the
+shape the plugin hands out is refused rather than pasted into an `href`, and a
+report that cannot be read costs the reader a link rather than sending them
+somewhere wrong.
+
+## Why a flake is counted apart from a failure
+
+A test carrying a rerun that ends the run green failed at least once and passed
+at least once, in one run, against one commit. It is not a failure — nothing is
+blocked — and it is not a pass either, and rolling it into the pass count is how
+it goes unlooked-at for a year.
+
+So it is a `flaky` output, a section of its own in the summary, and a warning
+annotation rather than an error one. A test that was retried and failed every
+time is a plain failure; it gave one answer, just slowly.
 
 ## Why the exit code decides the job
 

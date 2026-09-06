@@ -1,0 +1,53 @@
+# What this change did to the suite, not just where it left it.
+#
+# The baseline is the report this action already uploaded on the last
+# successful run of this workflow on the base branch. Nothing is stored for
+# it and no service is called - the artifact is there, and the API knows
+# which run wrote it. `actions: read` is what lets this job read it.
+name: tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  actions: read         # to fetch the base branch's report
+  pull-requests: write  # to comment
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: prashanth-sams/pytest-html-reporter-action@v1
+        id: report
+        with:
+          tests: tests/
+          comment: 'true'
+          # Both sides of the comparison are found by artifact name, so a
+          # matrix wants one name per leg and a comparison per leg with it.
+          artifact-name: pytest-html-report
+          # Left at its default, 'auto'. Set it to 'none' to skip the
+          # comparison deliberately - on a repository with no actions: read,
+          # say, where it would otherwise warn on every run.
+          compare: auto
+          fail-on-error: 'false'
+
+      # A test that fails here and passes on the base branch is this pull
+      # request's doing, and is worth stopping for even when the suite was
+      # already red. Empty means no baseline was found - a first run, a new
+      # workflow, an expired artifact - and that is not a reason to fail.
+      - name: No new failures
+        if: steps.report.outputs.new-failures != '' && steps.report.outputs.new-failures != '0'
+        run: |
+          echo "::error::$NEW test(s) fail here that pass on the base branch"
+          exit 1
+        env:
+          NEW: ${{ steps.report.outputs.new-failures }}
+
+      - name: Fail the job if the tests failed
+        if: steps.report.outputs.status != 'PASS'
+        run: exit 1

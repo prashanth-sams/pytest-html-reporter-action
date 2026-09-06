@@ -689,10 +689,12 @@ def test_a_repeated_flag_is_dropped_as_a_whole(capsys):
 # ---------------------------------------------------------------------------
 
 class Prime(object):
-    def __init__(self, directory, name="pytest_html_report.html", previous=""):
+    def __init__(self, directory, name="pytest_html_report.html", previous="",
+                 baseline_out=""):
         self.report_dir = str(directory)
         self.report_name = name
         self.previous = str(previous)
+        self.baseline_out = str(baseline_out)
 
 
 def test_a_placeholder_is_stood_in_so_the_last_build_is_archived(tmp_path):
@@ -820,6 +822,11 @@ def test_a_comment_body_is_trimmed_harder_than_the_summary(tmp_path):
         fail_on_error = "false"
         fail_on_empty = "false"
         min_pass_rate = min_coverage = coverage_file = pytest_log = previous = ""
+        report_file = baseline_json = baseline_zip = ""
+        baseline_label = baseline_url = ""
+        compare = "none"
+        annotations = "false"
+        annotation_limit = ""
 
     phr.cmd_summarize(Options())
 
@@ -1112,3 +1119,510 @@ def test_a_crash_still_leaves_a_failing_verdict(tmp_path, monkeypatch, capsys):
     assert code == 3
     assert "gate-passed=false" in output.read_text(encoding="utf-8")
     assert "never checked" in output.read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# every test, and where it sits
+# ---------------------------------------------------------------------------
+
+def test_a_test_carries_the_row_id_the_report_gave_it():
+    rows = [(test["row"], test["test"]) for test in load().tests()]
+
+    assert rows == [
+        ("0-0", "test_login_ok"),
+        ("0-1", "test_login_bad_password"),
+        ("1-0", "test_add_item"),
+        ("1-1", "test_checkout"),
+        ("1-2", "test_wishlist"),
+    ]
+
+
+def test_an_identity_is_the_suite_and_the_name():
+    assert load().tests()[0]["identity"] == "tests/test_login.py::test_login_ok"
+
+
+def test_two_tests_of_one_name_get_identities_of_their_own():
+    # One in a class, one beside it: the report lists both under the bare
+    # name, and a comparison that could not tell them apart would call one
+    # fixed and the other new on every single run.
+    run = phr.Run({"content": {"suites": {"0": {
+        "suite_name": "tests/t.py",
+        "tests": {"0": {"test_name": "test_x", "status": "PASS"},
+                  "1": {"test_name": "test_x", "status": "FAIL"}},
+        "status": {}}}}})
+
+    assert [test["identity"] for test in run.tests()] == [
+        "tests/t.py::test_x", "tests/t.py::test_x#2"]
+
+
+def test_flaky_is_a_retry_that_ended_green():
+    run = phr.Run({"content": {"suites": {"0": {
+        "suite_name": "tests/t.py",
+        "tests": {"0": {"test_name": "test_settled", "status": "PASS", "rerun": "2"},
+                  "1": {"test_name": "test_never", "status": "FAIL", "rerun": "3"},
+                  "2": {"test_name": "test_first_time", "status": "PASS", "rerun": "0"}},
+        "status": {}}}}})
+
+    # The one that failed every attempt is a failure, not a flake, and the
+    # one that never had to be retried is neither.
+    assert [test["test"] for test in run.flaky()] == ["test_settled"]
+
+
+# ---------------------------------------------------------------------------
+# linking a failure to its row in the report
+# ---------------------------------------------------------------------------
+
+REPORT = os.path.join(FIXTURES, "report.html")
+
+
+def test_anchors_are_read_out_of_the_report():
+    assert phr.anchors(REPORT)["0-1"] == \
+        "test-tests-test-login-py-test-login-bad-password-bbb222"
+
+
+def test_an_anchor_that_is_not_the_shape_the_plugin_hands_out_is_refused():
+    # The value ends up in an href in a comment posted under the repository's
+    # own identity, so it is matched rather than trusted.
+    assert "1-2" not in phr.anchors(REPORT)
+
+
+def test_a_report_that_cannot_be_read_costs_a_link_and_nothing_else(tmp_path):
+    assert phr.anchors(str(tmp_path / "nothing.html")) == {}
+
+
+def test_a_failure_links_to_its_own_row():
+    markdown = phr.render(load(), {
+        "title": "t",
+        "pages_url": "https://example.test/r/",
+        "anchors": phr.anchors(REPORT),
+    })
+
+    assert ('<a href="https://example.test/r/'
+            '#test-tests-test-login-py-test-login-bad-password-bbb222">') in markdown
+
+
+def test_a_failure_with_no_anchor_is_still_listed_plainly():
+    markdown = phr.render(load(), {
+        "title": "t",
+        "pages_url": "https://example.test/r/",
+        "anchors": phr.anchors(REPORT),
+    })
+
+    # test_wishlist is the row whose anchor was refused above.
+    assert "test_wishlist" in markdown
+    assert "test_wishlist</code></a>" not in markdown
+
+
+def test_no_report_url_means_no_links():
+    markdown = phr.render(load(), {"title": "t", "anchors": phr.anchors(REPORT)})
+
+    assert "<a href=" not in markdown
+
+
+def test_a_report_url_holding_a_quote_cannot_leave_its_attribute():
+    markdown = phr.render(load(), {
+        "title": "t",
+        "pages_url": 'https://example.test/" onmouseover="alert(1)',
+        "anchors": phr.anchors(REPORT),
+    })
+
+    assert 'onmouseover="alert(1)"' not in markdown
+    assert "&quot;" in markdown
+
+
+# ---------------------------------------------------------------------------
+# comparing with another build
+# ---------------------------------------------------------------------------
+
+def comparison():
+    return phr.compare(load(), load("output-baseline.json"))
+
+
+def test_a_test_that_has_started_failing_is_new():
+    assert [test["test"] for test in comparison()["new_failures"]] == [
+        "test_login_bad_password"]
+
+
+def test_a_test_that_has_stopped_failing_is_fixed():
+    assert [test["test"] for test in comparison()["fixed"]] == ["test_login_ok"]
+
+
+def test_a_test_failing_on_both_sides_is_neither():
+    assert [test["test"] for test in comparison()["still_failing"]] == ["test_wishlist"]
+
+
+def test_a_test_the_baseline_had_and_this_run_does_not_is_removed():
+    assert [test["test"] for test in comparison()["removed"]] == ["test_removed"]
+
+
+def test_deltas_are_this_run_the_baseline_and_the_difference():
+    changed = comparison()
+
+    assert changed["pass_rate"] == (50.0, 60.0, -10.0)
+    assert changed["total"] == (5, 6, -1)
+    assert changed["failed"] == (2, 2, 0)
+    assert round(changed["coverage"][2], 2) == -2.58
+
+
+def test_a_measure_only_one_side_has_is_left_unsubtracted():
+    # A run that measured no coverage and a baseline that did are not a drop
+    # of everything; they are two numbers that cannot be subtracted.
+    changed = phr.compare(load("output-pass.json"), load("output-baseline.json"))
+
+    assert changed["coverage"] == (None, 90.0, None)
+
+
+def test_a_test_this_run_added_and_that_fails_is_a_new_failure():
+    changed = phr.compare(load(), load("output-pass.json"))
+    new = [test["test"] for test in changed["new_failures"]]
+
+    assert "test_login_bad_password" in new
+    assert "test_wishlist" in new
+
+
+def test_the_comparison_is_shown_in_the_summary():
+    markdown = phr.render(load(), {
+        "title": "t",
+        "comparison": comparison(),
+        "comparison_label": "main #41",
+        "comparison_url": "https://example.test/runs/41",
+    })
+
+    assert "### Compared with [main #41](https://example.test/runs/41)" in markdown
+    assert "| Pass rate | 50% | 60% | −10% |" in markdown
+    assert "**1** new failure" in markdown
+    assert "**1** fixed" in markdown
+
+
+def test_a_new_failure_is_marked_as_new_where_the_failures_are_listed():
+    markdown = phr.render(load(), {"title": "t", "comparison": comparison()})
+    headings = [line for line in markdown.splitlines() if "<summary>" in line]
+
+    fresh = [line for line in headings if "test_login_bad_password" in line]
+    old = [line for line in headings if "test_wishlist" in line]
+
+    assert "**new**" in fresh[0]
+    assert "**new**" not in old[0]
+
+
+def test_a_run_that_changed_nothing_says_so():
+    green = load("output-pass.json")
+    markdown = phr.render(green, {"title": "t", "comparison": phr.compare(green, green)})
+
+    assert "No test changed which side of the line it is on." in markdown
+
+
+def test_a_failure_on_both_sides_is_not_reported_as_a_change():
+    markdown = phr.render(load(), {"title": "t", "comparison": phr.compare(load(), load())})
+
+    assert "**2** still failing." in markdown
+    assert "new failure" not in markdown
+
+
+# ---------------------------------------------------------------------------
+# finding a baseline
+# ---------------------------------------------------------------------------
+
+def test_a_baseline_path_wins_over_an_artifact(tmp_path):
+    baseline = phr.load_baseline(os.path.join(FIXTURES, "output-baseline.json"),
+                                 str(tmp_path / "never-read.zip"))
+
+    assert baseline.found is True
+    assert baseline.total == 6
+
+
+def test_a_baseline_is_taken_out_of_a_report_artifact(tmp_path):
+    import zipfile
+
+    archive = tmp_path / "report.zip"
+    with zipfile.ZipFile(str(archive), "w") as handle:
+        handle.write(os.path.join(FIXTURES, "output-baseline.json"), "output.json")
+        # The artifact carries the archived builds too when history is on,
+        # and one of those is not the run the artifact is of.
+        handle.write(os.path.join(FIXTURES, "output-pass.json"),
+                     "archive/2026-08-01.json")
+
+    baseline = phr.load_baseline("", str(archive))
+
+    assert baseline.total == 6
+
+
+def test_an_artifact_with_nothing_to_read_is_a_warning_not_a_crash(tmp_path, capsys):
+    import zipfile
+
+    archive = tmp_path / "report.zip"
+    with zipfile.ZipFile(str(archive), "w") as handle:
+        handle.writestr("readme.txt", "no report in here")
+
+    assert phr.load_baseline("", str(archive)).found is False
+    assert "nothing to compare against" in capsys.readouterr().out
+
+
+def test_an_unreadable_artifact_is_a_warning_not_a_crash(tmp_path, capsys):
+    broken = tmp_path / "report.zip"
+    broken.write_text("this is not a zip", encoding="utf-8")
+
+    assert phr.load_baseline("", str(broken)).found is False
+    assert "reported on its own" in capsys.readouterr().out
+
+
+def test_a_baseline_path_that_is_not_there_is_a_warning_not_a_crash(tmp_path, capsys):
+    assert phr.load_baseline(str(tmp_path / "gone.json"), "").found is False
+    assert "could not be read" in capsys.readouterr().out
+
+
+def test_the_restored_build_is_kept_for_the_next_run_to_compare_with(tmp_path):
+    (tmp_path / "output.json").write_text('{"status": "PASS"}', encoding="utf-8")
+    kept = tmp_path / "baseline.json"
+
+    phr.cmd_prime(Prime(tmp_path, baseline_out=kept))
+
+    assert kept.read_text(encoding="utf-8") == '{"status": "PASS"}'
+
+
+def test_nothing_is_kept_when_there_was_no_restored_build(tmp_path):
+    kept = tmp_path / "baseline.json"
+
+    phr.cmd_prime(Prime(tmp_path, baseline_out=kept))
+
+    assert not kept.exists()
+
+
+# ---------------------------------------------------------------------------
+# annotations
+# ---------------------------------------------------------------------------
+
+SOURCE = '''import pytest
+
+
+def test_first():
+    assert False
+
+
+@pytest.mark.parametrize("n", [1, 2])
+def test_parametrised(n):
+    assert n == 1
+
+
+async def test_awaited():
+    assert False
+'''
+
+
+def project(tmp_path, name="tests/test_thing.py"):
+    """A checkout with one test file in it, for the annotations to land on."""
+    path = tmp_path.joinpath(*name.split("/"))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(SOURCE, encoding="utf-8")
+
+    return str(tmp_path)
+
+
+class Annotating(object):
+    def __init__(self, limit=""):
+        self.annotation_limit = limit
+
+
+def annotate(run, tmp_path, comparison=None, limit=""):
+    return phr.annotate(run, comparison, Annotating(limit), [project(tmp_path)])
+
+
+def failing(*tests):
+    return phr.Run({"content": {"suites": {"0": {
+        "suite_name": "tests/test_thing.py",
+        "tests": dict((str(index), test) for index, test in enumerate(tests)),
+        "status": {}}}}})
+
+
+def test_a_failure_is_annotated_on_the_line_the_test_is_written_at(tmp_path, capsys):
+    run = failing({"test_name": "test_first", "status": "FAIL",
+                   "message": "assert False"})
+
+    annotate(run, tmp_path)
+
+    assert ("::error title=pytest-html-reporter%3A test_first failed,"
+            "file=tests/test_thing.py,line=4,col=1::") in capsys.readouterr().out
+
+
+def test_a_parametrised_test_is_annotated_on_its_definition(tmp_path, capsys):
+    # The report lists it as test_parametrised[2]; the file defines it once.
+    run = failing({"test_name": "test_parametrised[2]", "status": "FAIL",
+                   "message": "assert 2 == 1"})
+
+    annotate(run, tmp_path)
+
+    assert "line=9" in capsys.readouterr().out
+
+
+def test_an_async_test_is_found_too(tmp_path, capsys):
+    run = failing({"test_name": "test_awaited", "status": "FAIL", "message": ""})
+
+    annotate(run, tmp_path)
+
+    assert "line=13" in capsys.readouterr().out
+
+
+def test_a_traceback_beats_the_definition(tmp_path, capsys):
+    # An ERROR carries its whole traceback, and the frame it ends at is where
+    # the run actually came apart - which is rarely the def line.
+    run = failing({"test_name": "test_first", "status": "ERROR",
+                   "message": "E   RuntimeError: no\n\ntests/test_thing.py:5: RuntimeError"})
+
+    annotate(run, tmp_path)
+
+    assert "line=5" in capsys.readouterr().out
+
+
+def test_a_traceback_naming_another_file_is_not_used_for_this_one(tmp_path, capsys):
+    run = failing({"test_name": "test_first", "status": "ERROR",
+                   "message": "conftest.py:99: RuntimeError"})
+
+    annotate(run, tmp_path)
+
+    # The def line, not line 99 of a file this annotation is not on.
+    assert "line=4" in capsys.readouterr().out
+
+
+def test_the_path_is_relative_to_the_checkout_not_the_working_directory(tmp_path, capsys):
+    # working-directory: sample, and the report names its suites relative to
+    # that. GitHub addresses a diff from the repository root, so the prefix
+    # has to be back on the front by the time the annotation is written.
+    checkout = tmp_path
+    inside = tmp_path / "sample"
+    inside.mkdir()
+
+    run = failing({"test_name": "test_first", "status": "FAIL", "message": ""})
+    phr.annotate(run, None, Annotating(),
+                 [project(inside), str(checkout)])
+
+    assert "file=sample/tests/test_thing.py,line=4" in capsys.readouterr().out
+
+
+def test_a_test_whose_file_is_not_in_the_checkout_is_still_annotated(tmp_path, capsys):
+    run = phr.Run({"content": {"suites": {"0": {
+        "suite_name": "somewhere/else.py",
+        "tests": {"0": {"test_name": "test_x", "status": "FAIL", "message": "no"}},
+        "status": {}}}}})
+
+    annotate(run, tmp_path)
+    printed = capsys.readouterr().out
+
+    assert "::error " in printed
+    assert "file=" not in printed
+
+
+def test_a_flake_is_a_warning_rather_than_an_error(tmp_path, capsys):
+    run = failing({"test_name": "test_first", "status": "PASS", "rerun": "2"})
+
+    annotate(run, tmp_path)
+    printed = capsys.readouterr().out
+
+    assert "::warning " in printed
+    assert "::error " not in printed
+    assert "retried 2 times" in printed
+
+
+def test_new_failures_are_annotated_before_the_ones_already_there(tmp_path, capsys):
+    # GitHub drops the eleventh annotation without saying so, and the one to
+    # lose is the failure the base branch already had.
+    run = failing({"test_name": "test_first", "status": "FAIL", "message": "old"},
+                  {"test_name": "test_awaited", "status": "FAIL", "message": "new"})
+    changed = {"new_failures": [run.tests()[1]]}
+
+    annotate(run, tmp_path, comparison=changed, limit=1)
+    printed = capsys.readouterr().out
+
+    assert "test_awaited" in printed
+    assert "test_first" not in printed
+
+
+def test_a_limit_of_zero_annotates_nothing(tmp_path, capsys):
+    run = failing({"test_name": "test_first", "status": "FAIL", "message": "no"})
+
+    assert annotate(run, tmp_path, limit=0) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_a_message_cannot_open_a_workflow_command_of_its_own(tmp_path, capsys):
+    run = failing({"test_name": "test_first", "status": "FAIL",
+                   "message": "boom\n::set-output name=x::pwned"})
+
+    annotate(run, tmp_path)
+    printed = capsys.readouterr().out
+
+    assert len(printed.strip().splitlines()) == 1
+    assert "%0A" in printed
+    assert "\n::set-output" not in printed
+
+
+def test_a_property_escapes_what_would_end_it(tmp_path, capsys):
+    # A comma ends one property and begins the next, so a test name holding
+    # one must not be able to declare a file this annotation is not about.
+    run = failing({"test_name": "test_first,file=/etc/passwd", "status": "FAIL",
+                   "message": "no"})
+
+    annotate(run, tmp_path)
+    printed = capsys.readouterr().out
+
+    properties = printed[len("::error "):].split("::", 1)[0].split(",")
+
+    # No line: a name shaped like that defines no function to find one at.
+    assert [item.split("=", 1)[0] for item in properties] == ["title", "file"]
+    assert dict(item.split("=", 1) for item in properties)["file"] == \
+        "tests/test_thing.py"
+
+
+# ---------------------------------------------------------------------------
+# what a comparison puts in the outputs
+# ---------------------------------------------------------------------------
+
+def summarize(tmp_path, *extra):
+    output = tmp_path / "out"
+    result = run_cli(
+        ["summarize", "--json", os.path.join(FIXTURES, "output.json"),
+         "--exit-code", "1", "--fail-on-error", "false"] + list(extra),
+        {"GITHUB_OUTPUT": str(output)})
+
+    values = dict(line.split("=", 1) for line in
+                  output.read_text(encoding="utf-8").splitlines()
+                  if "=" in line and not line.startswith(" "))
+
+    return result, values
+
+
+def test_a_comparison_reaches_the_outputs(tmp_path):
+    _, values = summarize(
+        tmp_path, "--baseline-json", os.path.join(FIXTURES, "output-baseline.json"))
+
+    assert values["baseline-found"] == "true"
+    assert values["new-failures"] == "1"
+    assert values["fixed"] == "1"
+    assert values["still-failing"] == "1"
+    assert values["pass-rate-delta"] == "-10"
+
+
+def test_no_baseline_leaves_the_comparison_outputs_empty(tmp_path):
+    # Empty rather than 0: a workflow reading "0 new failures" would be told
+    # a comparison happened and found nothing, which is a different thing.
+    _, values = summarize(tmp_path)
+
+    assert values["baseline-found"] == "false"
+    assert values["new-failures"] == ""
+    assert values["pass-rate-delta"] == ""
+
+
+def test_compare_none_looks_for_no_baseline_at_all(tmp_path):
+    _, values = summarize(
+        tmp_path, "--compare", "none",
+        "--baseline-json", os.path.join(FIXTURES, "output-baseline.json"))
+
+    assert values["baseline-found"] == "false"
+
+
+def test_the_flaky_count_is_an_output_of_its_own(tmp_path):
+    _, values = summarize(tmp_path)
+
+    # The fixture's failing login test was rerun once and still failed, so it
+    # is a failure rather than a flake.
+    assert values["flaky"] == "0"
+    assert values["rerun"] == "1"

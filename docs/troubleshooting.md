@@ -101,6 +101,42 @@ The plugin reads whatever measured coverage; it does not measure any itself.
 The action warns and carries on rather than failing the run, so look for a
 warning annotation rather than a red step.
 
+## Nothing is compared with the base branch
+
+The summary carries no "Compared with" section, and `baseline-found` is
+`false`.
+
+- **Permissions.** `actions: read` on the job. Reading another run's artifacts
+  is what it grants, and without it the action warns once and carries on.
+- **No successful run over there.** The baseline is the artifact this action
+  uploaded on the last *successful* run of **this same workflow** on the base
+  branch. A workflow that only runs `on: pull_request` never runs on `main`,
+  so add `push: branches: [main]` to it.
+- **A different artifact name.** Both sides are found by name. A matrix that
+  gives each leg its own `artifact-name` compares each leg with its own
+  counterpart, which is what you want — but a name that changed between the
+  two runs matches nothing. Pin it with `baseline-artifact` if you have to.
+- **Retention.** An expired artifact is gone. Raise
+  `artifact-retention-days`, or supply your own with `baseline-json`.
+- **`upload-artifact: 'false'`.** Nothing was uploaded to compare against.
+
+`compare: 'none'` turns the whole thing off, warnings included.
+
+## A failure is not annotated on the diff
+
+- **The file was not found.** Annotations are addressed by a path relative to
+  the repository, and the report names a suite relative to pytest's rootdir.
+  When the two cannot be reconciled — a rootdir outside the checkout, a suite
+  name that is a plugin's node id rather than a file — the annotation is still
+  written, without a file, and reaches the run's annotation list.
+- **The limit.** GitHub shows ten annotations of each kind per step and drops
+  the rest without saying so, which is where `annotation-limit` stops by
+  default. The summary has no such cap; `failure-limit` governs it.
+- **The line.** A `FAIL` carries only the assertion lines pytest prefixed with
+  `E `, no traceback, so the annotation goes on the line the test is defined
+  at. An `ERROR` carries a whole traceback, and the annotation goes on the
+  frame it ends at — often a fixture in another file, which is the point.
+
 ## The report is enormous
 
 Every archived build costs roughly 5KB of the page. An hourly run with no
