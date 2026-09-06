@@ -59,8 +59,30 @@ jobs:
 
       - run: python -m pytest tests/ -q
 
+      # Windows would otherwise run this block under pwsh, where the bash
+      # below is not a script at all.
       - name: The action.yml suite really ran
+        shell: bash
+        env:
+          REPORT: ${{ runner.temp }}/action-yml.xml
         run: |
           set -euo pipefail
-          python -m pytest tests/test_action_yml.py -q --collect-only >/dev/null
-          test "$(python -m pytest tests/test_action_yml.py -q --collect-only 2>/dev/null | grep -c '::')" -gt 10
+
+          # The JUnit report rather than `--collect-only` output: the shape of
+          # that output has changed between pytest releases, and the install
+          # above takes whatever is newest. Cases that were skipped do not
+          # count, so the pyyaml importorskip at the top of the file shows up
+          # as a failure here instead of as a job that checked nothing.
+          python -m pytest tests/test_action_yml.py -q --junitxml="$REPORT"
+
+          python - <<'PY'
+          import os
+          import sys
+          import xml.etree.ElementTree as ET
+
+          cases = ET.parse(os.environ["REPORT"]).getroot().iter("testcase")
+          ran = [c for c in cases if c.find("skipped") is None]
+          print(f"{len(ran)} action.yml tests ran")
+          if len(ran) <= 10:
+              sys.exit("the action.yml suite did not run - is pyyaml installed?")
+          PY

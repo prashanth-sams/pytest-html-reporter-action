@@ -1,0 +1,33 @@
+<!-- A cut-down stand-in for the report the plugin writes: the rows carry the
+     two things the summary reads back out of it, an anchor built from the
+     node id and the cell naming which suite and test the row is.
+
+     The bogus row is deliberate. Its id is not the shape the plugin hands
+     out, and it has to be refused rather than pasted into a link. -->
+<html>
+<body>
+<table id="tm">
+  <tbody>
+    <tr id="test-tests-test-login-py-test-login-ok-aaa111">
+      <td class="jump-cell" data-jump="suite" data-target="0">tests/test_login.py</td>
+      <td class="jump-cell" data-jump="test" data-target="0-0">test_login_ok</td>
+    </tr>
+    <tr id="test-tests-test-login-py-test-login-bad-password-bbb222">
+      <td class="jump-cell" data-jump="suite" data-target="0">tests/test_login.py</td>
+      <td class="jump-cell" data-jump="test" data-target="0-1">test_login_bad_password</td>
+    </tr>
+    <tr id="test-tests-test-cart-py-test-add-item-ccc333">
+      <td class="jump-cell" data-jump="suite" data-target="1">tests/test_cart.py</td>
+      <td class="jump-cell" data-jump="test" data-target="1-0">test_add_item</td>
+    </tr>
+    <tr id="test-tests-test-cart-py-test-checkout-ddd444">
+      <td class="jump-cell" data-jump="suite" data-target="1">tests/test_cart.py</td>
+      <td class="jump-cell" data-jump="test" data-target="1-1">test_checkout</td>
+    </tr>
+    <tr id="test-BREAKS OUT" onmouseover="alert(1)">
+      <td class="jump-cell" data-jump="test" data-target="1-2">test_wishlist</td>
+    </tr>
+  </tbody>
+</table>
+</body>
+</html>

@@ -184,9 +184,23 @@ inputs:
   report-url:
     description: >-
       Link to the published report, shown in the summary and the comment - for
-      instance your GitHub Pages URL.
+      instance your GitHub Pages URL. Set it and each failure in the summary
+      becomes a link to that test's own row in the report.
     required: false
     default: ''
+  annotations:
+    description: >-
+      Annotate the failing lines, so a failure is marked on the diff of the
+      pull request that caused it rather than only in the summary.
+    required: false
+    default: 'true'
+  annotation-limit:
+    description: >-
+      Maximum annotations of each kind - errors for failures, warnings for
+      flakes. GitHub shows ten of each per step and drops the rest without
+      saying so, which is why the default stops there rather than higher.
+    required: false
+    default: '10'
 
   comment:
     description: >-
@@ -258,6 +272,36 @@ inputs:
     required: false
     default: 'pytest-html-reporter-history'
 
+  # -- comparing with another build ----------------------------------------
+  compare:
+    description: >-
+      Compare this run with an earlier one and report what changed - auto or
+      none. On auto the action looks for the report artifact of the last
+      successful run of this workflow on the base branch, and falls back to
+      the build the history cache restored. Needs actions: read to reach the
+      base branch's artifact; without it the comparison is skipped, not failed.
+    required: false
+    default: 'auto'
+  baseline-json:
+    description: >-
+      An output.json to compare against, if you would rather fetch one
+      yourself. Set, it is used and nothing is downloaded. Resolved against
+      working-directory.
+    required: false
+    default: ''
+  baseline-artifact:
+    description: >-
+      Name of the artifact to take the baseline out of. Empty uses
+      artifact-name, which is what this action uploaded on the earlier run.
+    required: false
+    default: ''
+  baseline-ref:
+    description: >-
+      Branch whose last successful run is the baseline. Empty uses the pull
+      request's base branch, or the repository's default branch.
+    required: false
+    default: ''
+
   # -- gates ---------------------------------------------------------------
   fail-on-error:
     description: >-
@@ -312,6 +356,11 @@ outputs:
   rerun:
     description: Rerun attempts recorded across the run.
     value: ${{ steps.summarize.outputs.rerun }}
+  flaky:
+    description: >-
+      Tests that failed, were retried and then passed. Counted apart from the
+      failures: the run is green and these are why it nearly was not.
+    value: ${{ steps.summarize.outputs.flaky }}
   suites:
     description: Test suites in the run.
     value: ${{ steps.summarize.outputs.suites }}
@@ -347,6 +396,31 @@ outputs:
   summary:
     description: The markdown summary, for reuse in a later step.
     value: ${{ steps.summarize.outputs.summary }}
+  baseline-found:
+    description: >-
+      Whether an earlier build was found to compare this run against. Every
+      output below is empty when it is false - a comparison that never
+      happened is not a comparison that found nothing.
+    value: ${{ steps.summarize.outputs.baseline-found }}
+  new-failures:
+    description: Tests failing here that were not failing in the baseline.
+    value: ${{ steps.summarize.outputs.new-failures }}
+  fixed:
+    description: Tests failing in the baseline that pass here.
+    value: ${{ steps.summarize.outputs.fixed }}
+  still-failing:
+    description: Tests failing in both.
+    value: ${{ steps.summarize.outputs.still-failing }}
+  pass-rate-delta:
+    description: Percentage points this run's pass rate moved, signed.
+    value: ${{ steps.summarize.outputs.pass-rate-delta }}
+  coverage-delta:
+    description: Percentage points coverage moved, signed.
+    value: ${{ steps.summarize.outputs.coverage-delta }}
+  baseline-url:
+    description: The run the comparison was made against, when one was found.
+    value: ${{ steps.baseline.outputs.url }}
+
   artifact-id:
     description: Id of the uploaded artifact, when one was uploaded.
     value: ${{ steps.upload.outputs.artifact-id }}
@@ -366,6 +440,8 @@ runs:
         PHR_REPORT_COVERAGE: ${{ inputs.report-coverage }}
         PHR_REPORT_OPEN: ${{ inputs.report-open }}
         PHR_COMMENT_MODE: ${{ inputs.comment-mode }}
+        PHR_COMPARE: ${{ inputs.compare }}
+        PHR_ANNOTATION_LIMIT: ${{ inputs.annotation-limit }}
         PHR_PR_NUMBER: ${{ inputs.pr-number }}
         PHR_HAS_TOKEN: ${{ inputs.github-token != '' && 'yes' || '' }}
         PHR_WORKING_DIRECTORY: ${{ inputs.working-directory }}
@@ -391,6 +467,7 @@ runs:
         one_of report-coverage    "$PHR_REPORT_COVERAGE"    auto none
         one_of report-open        "$PHR_REPORT_OPEN"        auto always none
         one_of comment-mode       "$PHR_COMMENT_MODE"       always on-failure
+        one_of compare            "$PHR_COMPARE"            auto none
 
         case "${PHR_PR_NUMBER:-}" in
           ""|*[!0-9]*) [ -z "${PHR_PR_NUMBER:-}" ] || fail "pr-number must be a pull request number - got '$PHR_PR_NUMBER'" ;;
@@ -411,6 +488,7 @@ runs:
         limit report-attachment-limit "$PHR_REPORT_ATTACHMENT_LIMIT"
         limit report-step-limit       "$PHR_REPORT_STEP_LIMIT"
         limit report-coverage-limit   "$PHR_REPORT_COVERAGE_LIMIT"
+        limit annotation-limit        "$PHR_ANNOTATION_LIMIT"
 
         [ -d "$PHR_WORKING_DIRECTORY" ] || fail "working-directory '$PHR_WORKING_DIRECTORY' does not exist"
 
@@ -556,7 +634,8 @@ runs:
         # Ready whatever the cache restored, and clear the last run's leavings.
         "$PHR_PYTHON" "$PHR_ACTION_PATH/scripts/phr.py" prime \
           --report-dir "$PHR_REPORT_DIR" --report-name "$PHR_REPORT_NAME" \
-          --previous "$RUNNER_TEMP/pytest-html-reporter-previous"
+          --previous "$RUNNER_TEMP/pytest-html-reporter-previous" \
+          --baseline-out "$RUNNER_TEMP/pytest-html-reporter-history-baseline.json"
 
         # Which report flags this plugin actually has. A user is free to pin
         # an older version, and an unknown flag does not degrade a feature -
@@ -640,6 +719,98 @@ runs:
       with:
         path: ${{ steps.resolve.outputs.report-dir }}
 
+    # What "compared with the base branch" comes down to: the report this
+    # action uploaded on the last successful run of this same workflow over
+    # there. Nothing is stored anywhere for it - the artifact already exists,
+    # and the API knows which run wrote it.
+    #
+    # Every failure in here is a warning rather than an error. A comparison
+    # is a nicety on top of the report, and a repository that has not granted
+    # actions: read should get the report anyway.
+    - name: Find a build to compare against
+      id: baseline
+      if: inputs.compare != 'none' && inputs.baseline-json == ''
+      uses: actions/github-script@v7
+      with:
+        github-token: ${{ inputs.github-token }}
+        script: |
+          core.setOutput('zip', '');
+          core.setOutput('url', '');
+          core.setOutput('label', '');
+
+          if (!process.env.PHR_HAS_TOKEN) {
+            core.info('github-token is empty, so no baseline was looked for.');
+            return;
+          }
+
+          const wanted = process.env.PHR_BASELINE_ARTIFACT;
+          const branch = process.env.PHR_BASELINE_REF
+            || context.payload.pull_request?.base?.ref
+            || context.payload.repository?.default_branch;
+
+          if (!branch) {
+            core.info('this event names no branch to compare against.');
+            return;
+          }
+
+          try {
+            const fs = require('fs');
+            const path = require('path');
+
+            // Which workflow this run belongs to, so the baseline is the same
+            // workflow on the other branch rather than whatever ran last.
+            const mine = await github.rest.actions.getWorkflowRun({
+              ...context.repo, run_id: context.runId,
+            });
+
+            const runs = await github.rest.actions.listWorkflowRuns({
+              ...context.repo,
+              workflow_id: mine.data.workflow_id,
+              branch,
+              status: 'success',
+              per_page: 10,
+            });
+
+            for (const run of runs.data.workflow_runs) {
+              // A push to the base branch lists the run doing the looking.
+              if (run.id === context.runId) continue;
+
+              const artifacts = await github.paginate(
+                github.rest.actions.listWorkflowRunArtifacts,
+                { ...context.repo, run_id: run.id, per_page: 100 });
+
+              const found = artifacts.find((one) => one.name === wanted && !one.expired);
+              if (!found) continue;
+
+              const zip = await github.rest.actions.downloadArtifact({
+                ...context.repo, artifact_id: found.id, archive_format: 'zip',
+              });
+
+              const target = path.join(process.env.RUNNER_TEMP,
+                                       'pytest-html-reporter-baseline.zip');
+              fs.writeFileSync(target, Buffer.from(zip.data));
+
+              core.setOutput('zip', target);
+              core.setOutput('url', run.html_url);
+              core.setOutput('label', `${branch} #${run.run_number}`);
+              core.info(`comparing with ${branch} run #${run.run_number}`);
+              return;
+            }
+
+            core.info(
+              `no run of this workflow on ${branch} has a '${wanted}' artifact ` +
+              `left to compare against.`);
+          } catch (error) {
+            core.warning(
+              `no baseline was fetched: ${error.message}. Comparing with the ` +
+              `base branch reads another run's artifacts, which needs ` +
+              `actions: read on this job.`);
+          }
+      env:
+        PHR_HAS_TOKEN: ${{ inputs.github-token != '' && 'yes' || '' }}
+        PHR_BASELINE_ARTIFACT: ${{ inputs.baseline-artifact != '' && inputs.baseline-artifact || inputs.artifact-name }}
+        PHR_BASELINE_REF: ${{ inputs.baseline-ref }}
+
     - name: Summarise the run
       id: summarize
       shell: bash
@@ -664,9 +835,32 @@ runs:
         PHR_MIN_COVERAGE: ${{ inputs.min-coverage }}
         PHR_REPORT_COVERAGE_FILE: ${{ inputs.report-coverage-file }}
         PHR_COMMENT_BODY: ${{ runner.temp }}/pytest-html-reporter-comment.md
+        PHR_REPORT_FILE: ${{ steps.resolve.outputs.report-file }}
+        PHR_ANNOTATIONS: ${{ inputs.annotations }}
+        PHR_ANNOTATION_LIMIT: ${{ inputs.annotation-limit }}
+        PHR_COMPARE: ${{ inputs.compare }}
+        PHR_BASELINE_JSON: ${{ inputs.baseline-json }}
+        PHR_BASELINE_ZIP: ${{ steps.baseline.outputs.zip }}
+        PHR_BASELINE_LABEL: ${{ steps.baseline.outputs.label }}
+        PHR_BASELINE_URL: ${{ steps.baseline.outputs.url }}
+        PHR_HISTORY: ${{ inputs.history }}
+        PHR_HISTORY_BASELINE: ${{ runner.temp }}/pytest-html-reporter-history-baseline.json
         PHR_PYTHON: ${{ steps.python.outputs.bin }}
       run: |
         set -uo pipefail
+
+        # Nothing was found on the base branch, but the history cache restored
+        # this branch's last build before pytest overwrote it - so there is
+        # still something to compare with. Second in line rather than first:
+        # the base branch is what a pull request is asking to be merged into.
+        baseline_json="$PHR_BASELINE_JSON"
+        baseline_label="$PHR_BASELINE_LABEL"
+
+        if [ -z "$baseline_json" ] && [ -z "$PHR_BASELINE_ZIP" ] \
+           && [ "$PHR_HISTORY" = "true" ] && [ -f "$PHR_HISTORY_BASELINE" ]; then
+          baseline_json="$PHR_HISTORY_BASELINE"
+          baseline_label="the previous build on this branch"
+        fi
 
         # summarize exits non-zero when a gate is not met. That verdict is
         # read back out of its gate-passed output by the last step, so it must
@@ -674,6 +868,14 @@ runs:
         set +e
         "$PHR_PYTHON" "$PHR_ACTION_PATH/scripts/phr.py" summarize \
           --json "$PHR_JSON" \
+          --report-file "$PHR_REPORT_FILE" \
+          --annotations "$PHR_ANNOTATIONS" \
+          --annotation-limit "$PHR_ANNOTATION_LIMIT" \
+          --compare "$PHR_COMPARE" \
+          --baseline-json "$baseline_json" \
+          --baseline-zip "$PHR_BASELINE_ZIP" \
+          --baseline-label "$baseline_label" \
+          --baseline-url "$PHR_BASELINE_URL" \
           --title "$PHR_TITLE" \
           --exit-code "$PHR_EXIT_CODE" \
           --wall-clock "$PHR_WALL_CLOCK" \

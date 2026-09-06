@@ -37,6 +37,10 @@ DEFAULT_REPORT_NAME = "pytest_html_report.html"
 # so in the docs rather than pretending the two defaults agree.
 COUNT_KEYS = ("pass", "fail", "skip", "error", "xpass", "xfail", "rerun")
 
+# The two statuses that make a run red. An xFAIL is a failure that was asked
+# for and a SKIP is a test that never ran, so neither is one.
+FAILING = ("FAIL", "ERROR")
+
 STATUS_LABELS = (
     ("pass", "Passed", "✅"),
     ("fail", "Failed", "❌"),
@@ -339,23 +343,69 @@ class Run(object):
     @property
     def duration(self):
         """Summed test durations. Wall clock is measured by the action itself."""
-        total = 0.0
-        for suite in self._suites():
-            for test in _tests_of(suite):
-                total += _float(test.get("duration"))
-
-        return round(total, 2)
+        return round(sum(test["duration"] for test in self.tests()), 2)
 
     # -- detail -----------------------------------------------------------
 
-    def _suites(self):
+    def _suite_items(self):
+        """(key, suite) pairs, in report order.
+
+        The keys are the report's own - stringified indices - and they are
+        carried rather than re-numbered because half of a row's id in the
+        HTML is one of them. Re-numbering here would line a summary up
+        against the wrong anchor the moment a suite arrived out of order.
+        """
         suites = ((self.data.get("content") or {}).get("suites")) or {}
+
         if isinstance(suites, dict):
             # The keys are stringified indices; sort numerically so the
             # report and the summary list the suites in the same order.
-            return [suites[key] for key in sorted(suites, key=_sort_key)]
+            return [(str(key), suites[key]) for key in sorted(suites, key=_sort_key)
+                    if isinstance(suites[key], dict)]
 
-        return list(suites)
+        return [(str(index), suite) for index, suite in enumerate(suites)
+                if isinstance(suite, dict)]
+
+    def _suites(self):
+        return [suite for _, suite in self._suite_items()]
+
+    def tests(self):
+        """Every test in the run, in report order, with its place in it.
+
+        ``row`` is the id the report's own table gives the row - the suite's
+        key and the test's, joined the way the plugin joins them - so that a
+        test here can be matched to the anchor the HTML carries for it.
+
+        ``identity`` is what one test is called across two builds, so that a
+        comparison can line this run up against another. Two tests in one
+        file can share a name - one in a class, one beside it - and a
+        repeat is numbered rather than left to collide, which would have a
+        comparison call one of them fixed and the other new every time.
+        """
+        out = []
+        seen = {}
+
+        for suite_key, suite in self._suite_items():
+            name = str(suite.get("suite_name") or "unnamed")
+
+            for test_key, test in _test_items(suite):
+                test_name = str(test.get("test_name") or "unnamed")
+                identity = "%s::%s" % (name, test_name)
+                repeat = seen.get(identity, 0) + 1
+                seen[identity] = repeat
+
+                out.append({
+                    "suite": name,
+                    "test": test_name,
+                    "status": str(test.get("status") or "").upper(),
+                    "message": str(test.get("message") or "").strip(),
+                    "rerun": _int(test.get("rerun")),
+                    "duration": _float(test.get("duration")),
+                    "row": "%s-%s" % (suite_key, test_key),
+                    "identity": identity if repeat == 1 else "%s#%d" % (identity, repeat),
+                })
+
+        return out
 
     def suite_rows(self):
         rows = []
@@ -372,45 +422,31 @@ class Run(object):
 
     def failures(self):
         """Every failed or errored test, in report order."""
-        out = []
-        for suite in self._suites():
-            name = str(suite.get("suite_name") or "unnamed")
-            for test in _tests_of(suite):
-                status = str(test.get("status") or "").upper()
-                if status in ("FAIL", "ERROR"):
-                    out.append({
-                        "suite": name,
-                        "test": str(test.get("test_name") or "unnamed"),
-                        "status": status,
-                        "message": str(test.get("message") or "").strip(),
-                        "rerun": _int(test.get("rerun")),
-                        "duration": _float(test.get("duration")),
-                    })
+        return [test for test in self.tests() if test["status"] in FAILING]
 
-        return out
+    def flaky(self):
+        """Tests that failed, were retried, and then did not fail.
+
+        A rerun only happens after a failure, so a test carrying one that
+        ends the run green gave two answers to the same question. It is
+        counted apart from the failures because it is a different problem:
+        a failing test blocks the merge, a flaky one wastes everybody's
+        afternoon and blocks nothing until it is looked at.
+        """
+        return [test for test in self.tests()
+                if test["rerun"] and test["status"] not in FAILING]
 
     def slowest(self, limit=5):
-        tests = []
-        for suite in self._suites():
-            name = str(suite.get("suite_name") or "unnamed")
-            for test in _tests_of(suite):
-                # A skipped test's duration is the cost of deciding to skip
-                # it, which is nobody's idea of a slow test.
-                if str(test.get("status") or "").upper() == "SKIP":
-                    continue
-
-                tests.append({
-                    "suite": name,
-                    "test": str(test.get("test_name") or "unnamed"),
-                    "duration": _float(test.get("duration")),
-                })
-
+        # A skipped test's duration is the cost of deciding to skip it,
+        # which is nobody's idea of a slow test.
+        tests = [test for test in self.tests() if test["status"] != "SKIP"]
         tests.sort(key=lambda item: item["duration"], reverse=True)
+
         return [test for test in tests[:limit] if test["duration"] > 0]
 
 
-def _tests_of(suite):
-    """A suite's tests, in report order, whichever shape they arrived in.
+def _test_items(suite):
+    """(key, test) pairs for a suite, in report order.
 
     The plugin writes a dict keyed by a stringified index. Anything that has
     been through a tool of its own may hand back a list instead, and one
@@ -419,10 +455,11 @@ def _tests_of(suite):
     tests = (suite or {}).get("tests") or {}
 
     if isinstance(tests, dict):
-        return [tests[key] for key in sorted(tests, key=_sort_key)
+        return [(str(key), tests[key]) for key in sorted(tests, key=_sort_key)
                 if isinstance(tests[key], dict)]
 
-    return [test for test in tests if isinstance(test, dict)]
+    return [(str(index), test) for index, test in enumerate(tests)
+            if isinstance(test, dict)]
 
 
 def _int(value):
@@ -444,6 +481,189 @@ def _sort_key(value):
         return (0, int(value), "")
     except (TypeError, ValueError):
         return (1, 0, str(value))
+
+
+# ---------------------------------------------------------------------------
+# linking one failure to its row in the report
+# ---------------------------------------------------------------------------
+
+# A row id the plugin hands out: "test-", a slug of the node id, and six hex
+# digits of its digest. Matched rather than trusted, because the value goes
+# into an href in a comment posted under the repository's own identity.
+_ANCHOR = re.compile(r"^test-[a-z0-9-]+$")
+
+# The row's own cell says which suite and which test it is, and those two
+# numbers are the keys output.json files the same test under. They are what
+# ties an anchor to a run this module has read, without the summary having to
+# rely on the two documents listing their rows in the same order.
+_ROW_TARGET = re.compile(r'data-jump="test"\s+data-target="(\d+-\d+)"')
+
+
+def anchors(report_file):
+    """{row id: anchor} read back out of the report the plugin just wrote.
+
+    The report gives every row an id built from the test's *node id*, which
+    is what a `#` link to one failure has to carry. The node id is not in
+    output.json - only the suite and the test name are, and a test inside a
+    class is listed under a name its node id does not hold - so the anchors
+    are read out of the HTML rather than derived a second time here.
+
+    Deriving them would put a link in the summary that quietly resolves to
+    nothing for exactly the tests that are hardest to find by hand. An empty
+    map is the honest answer when the report cannot be read, and it costs
+    the reader a link rather than sending them somewhere wrong.
+    """
+    try:
+        with open(report_file, encoding="utf-8", errors="replace") as handle:
+            html = handle.read()
+    except (IOError, OSError):
+        return {}
+
+    found = {}
+
+    # Split rather than matched across the whole document: the report is a
+    # megabyte and a half of one line, and a pattern spanning two rows would
+    # happily pair one row's id with the next row's cell.
+    for chunk in html.split('<tr id="test-')[1:]:
+        end = chunk.find('"')
+        if end < 0:
+            continue
+
+        anchor = "test-" + chunk[:end]
+        if not _ANCHOR.match(anchor):
+            continue
+
+        # Cut at the next row so that a row without a cell of its own - a
+        # report shaped differently by some later version - cannot quietly
+        # borrow the next row's and put the link on the wrong test.
+        target = _ROW_TARGET.search(chunk.split("<tr", 1)[0])
+        if target:
+            found.setdefault(target.group(1), anchor)
+
+    return found
+
+
+def link_rows(tests, report_url, found):
+    """Give each test the URL of its own row, when there is one to give."""
+    for test in tests:
+        anchor = found.get(test["row"])
+        test["anchor"] = anchor or ""
+        test["url"] = "%s#%s" % (report_url, anchor) if anchor and report_url else ""
+
+    return tests
+
+
+# ---------------------------------------------------------------------------
+# comparing this run with another
+# ---------------------------------------------------------------------------
+
+def compare(run, baseline):
+    """What this run changed, measured against `baseline`.
+
+    Tests are lined up by identity - the suite and the name - rather than by
+    position, so a test added at the top of a file does not read as every
+    test below it having changed.
+    """
+    now, then = run.tests(), baseline.tests()
+    before = dict((test["identity"], test) for test in then)
+    after = dict((test["identity"], test) for test in now)
+
+    new_failures, fixed, still_failing = [], [], []
+
+    for test in now:
+        was = before.get(test["identity"])
+
+        if test["status"] in FAILING:
+            if was is None:
+                new_failures.append(dict(test, was=""))
+            elif was["status"] in FAILING:
+                still_failing.append(test)
+            else:
+                new_failures.append(dict(test, was=was["status"]))
+        elif was is not None and was["status"] in FAILING:
+            fixed.append(test)
+
+    return {
+        "new_failures": new_failures,
+        "fixed": fixed,
+        "still_failing": still_failing,
+        "added": [test for test in now if test["identity"] not in before],
+        "removed": [test for test in then if test["identity"] not in after],
+        "pass_rate": _delta(run.pass_rate, baseline.pass_rate),
+        "coverage": _delta(_percent(run.coverage), _percent(baseline.coverage)),
+        "total": _delta(run.total, baseline.total),
+        "failed": _delta(run.counts["fail"] + run.counts["error"],
+                         baseline.counts["fail"] + baseline.counts["error"]),
+    }
+
+
+def _percent(coverage):
+    return None if not coverage else _float(coverage.get("percent"))
+
+
+def _delta(now, was):
+    """(now, was, difference) - with None wherever a side has no number.
+
+    A run that measured no coverage and a baseline that did are not a drop
+    of everything; they are two things that cannot be subtracted, and the
+    difference is left unsaid rather than invented.
+    """
+    if now is None or was is None:
+        return (now, was, None)
+
+    return (now, was, now - was)
+
+
+def load_baseline(json_path, zip_path):
+    """The build to compare against, from a file or from an artifact zip.
+
+    A path wins over a zip: the first is what somebody asked for by hand,
+    the second is what the action found on its own.
+    """
+    if json_path:
+        run = Run.load(json_path)
+        if not run.found:
+            warn("baseline-json %r could not be read, so this run is reported "
+                 "on its own." % json_path)
+        return run
+
+    if zip_path:
+        return _baseline_from_zip(zip_path)
+
+    return Run(None, "")
+
+
+def _baseline_from_zip(zip_path):
+    """The output.json inside a report artifact downloaded for comparison."""
+    import zipfile
+
+    try:
+        with zipfile.ZipFile(zip_path) as archive:
+            names = [name for name in archive.namelist()
+                     if name.rsplit("/", 1)[-1] == JSON_NAME]
+
+            # The artifact holds the run's own output.json and, when history
+            # is on, one per archived build beside it. The current one is the
+            # shallowest that is not inside archive/.
+            current = [name for name in names
+                       if ("/%s/" % ARCHIVE_DIR) not in "/" + name]
+            if not current:
+                warn("the baseline artifact holds no %s outside its %s folder, "
+                     "so there is nothing to compare against."
+                     % (JSON_NAME, ARCHIVE_DIR))
+                return Run(None, zip_path)
+
+            chosen = sorted(current, key=lambda name: (name.count("/"), name))[0]
+            data = json.loads(archive.read(chosen).decode("utf-8"))
+
+            if not isinstance(data, dict):
+                raise ValueError("%s holds %s" % (chosen, type(data).__name__))
+
+            return Run(data, chosen)
+    except Exception as error:
+        warn("the baseline artifact at %s could not be read (%s), so this run "
+             "is reported on its own." % (zip_path, error))
+        return Run(None, zip_path)
 
 
 # ---------------------------------------------------------------------------
@@ -478,9 +698,20 @@ def render(run, context):
         lines.append(coverage)
         lines.append("")
 
-    failures = run.failures()
+    comparison = context.get("comparison")
+    if comparison:
+        lines.append(_comparison(comparison, context))
+        lines.append("")
+
+    failures = _linked(run.failures(), context)
     if failures:
-        lines.append(_failures(failures, _limit(context.get("failure_limit"), 10)))
+        lines.append(_failures(failures, _limit(context.get("failure_limit"), 10),
+                               comparison))
+        lines.append("")
+
+    flaky = _linked(run.flaky(), context)
+    if flaky:
+        lines.append(_flaky(flaky, _limit(context.get("failure_limit"), 10)))
         lines.append("")
 
     rows = run.suite_rows()
@@ -550,13 +781,42 @@ def _coverage_line(run):
         _trim(percent), kind, covered, statements, _int(coverage.get("missing")))
 
 
-def _failures(failures, limit):
+def _linked(tests, context):
+    """Each test, carrying the URL of its own row in the published report."""
+    return link_rows(tests, context.get("pages_url") or "",
+                     context.get("anchors") or {})
+
+
+def _row_link(test):
+    """A test's name, as a link to its row when the report has an address.
+
+    The anchor is matched against the plugin's own shape before it gets
+    here, and the report URL is the repository's own input, so what goes
+    into the href is never the test's to write.
+    """
+    label = _summary(test["test"])
+    url = test.get("url")
+
+    return '<a href="%s">%s</a>' % (_href(url), label) if url else label
+
+
+def _href(url):
+    """A URL, safe as an attribute value."""
+    return (str(url).replace("&", "&amp;").replace('"', "&quot;")
+            .replace("<", "&lt;").replace(">", "&gt;"))
+
+
+def _failures(failures, limit, comparison=None):
     lines = ["### Failures"]
+    fresh = set(test["identity"]
+                for test in (comparison or {}).get("new_failures", []))
 
     for failure in failures[:limit]:
-        heading = "%s › %s" % (_summary(failure["suite"]), _summary(failure["test"]))
+        heading = "%s › %s" % (_summary(failure["suite"]), _row_link(failure))
         if failure["status"] == "ERROR":
             heading = "\U0001f6a8 " + heading
+        if failure["identity"] in fresh:
+            heading += " · **new**"
         if failure["rerun"]:
             heading += " (rerun %s×)" % failure["rerun"]
 
@@ -576,6 +836,108 @@ def _failures(failures, limit):
                      % (dropped, _plural(dropped, "failure")))
 
     return "\n".join(lines)
+
+
+def _flaky(tests, limit):
+    """The tests that only passed because they were run again.
+
+    Listed apart from the failures because they are a different problem: the
+    run is green, nothing is blocked, and without a section of its own that
+    is the last anybody hears of it until it fails for real.
+    """
+    lines = ["### Flaky", "",
+             "%s %s passed only after a retry." % (len(tests), _plural(len(tests), "test")),
+             "",
+             "| Test | Retries |", "| --- | ---: |"]
+
+    for test in tests[:limit]:
+        lines.append("| %s › %s | %s |" % (
+            _cell(test["suite"]), _row_link(test), test["rerun"]))
+
+    dropped = len(tests) - limit
+    if dropped > 0:
+        lines.append("")
+        lines.append("_%s further %s not listed here._"
+                     % (dropped, _plural(dropped, "test")))
+
+    return "\n".join(lines)
+
+
+def _comparison(comparison, context):
+    """This run set beside the build it is being compared with."""
+    label = context.get("comparison_label") or "the baseline"
+    url = context.get("comparison_url") or ""
+    heading = "### Compared with %s" % (
+        "[%s](%s)" % (label, url) if url else label)
+
+    lines = [heading, "",
+             "| | This run | Baseline | Δ |",
+             "| --- | ---: | ---: | ---: |"]
+
+    for name, key, suffix in (("Pass rate", "pass_rate", "%"),
+                              ("Coverage", "coverage", "%"),
+                              ("Failed", "failed", ""),
+                              ("Tests", "total", "")):
+        now, was, difference = comparison[key]
+        if now is None and was is None:
+            continue
+
+        lines.append("| %s | %s | %s | %s |" % (
+            name, _measure(now, suffix), _measure(was, suffix),
+            _difference(difference, suffix)))
+
+    verdict = []
+    for count, word in ((len(comparison["new_failures"]), "new failure"),
+                        (len(comparison["fixed"]), "fixed"),
+                        (len(comparison["still_failing"]), "still failing")):
+        if count:
+            verdict.append("**%s** %s" % (count, _plural(count, word)
+                                          if word == "new failure" else word))
+
+    lines.append("")
+    lines.append((", ".join(verdict) + ".") if verdict
+                 else "No test changed which side of the line it is on.")
+
+    for title, tests in (("New failures", comparison["new_failures"]),
+                         ("Fixed", comparison["fixed"])):
+        listed = _linked(tests, context)[:_limit(context.get("failure_limit"), 10)]
+        if not listed:
+            continue
+
+        lines.append("")
+        lines.append("**%s**" % title)
+        lines.append("")
+        for test in listed:
+            lines.append("- %s › %s" % (_summary(test["suite"]), _row_link(test)))
+
+        dropped = len(tests) - len(listed)
+        if dropped > 0:
+            lines.append("- _and %s more_" % dropped)
+
+    return "\n".join(lines)
+
+
+def _measure(value, suffix):
+    return "–" if value is None else "%s%s" % (_trim(round(value, 2)), suffix)
+
+
+def _difference(value, suffix):
+    """A delta, signed, with a dash where the two sides cannot be subtracted.
+
+    A typographic minus rather than a hyphen, because this one is read: it
+    sets beside the plus, which is a full-width glyph, and a hyphen next to
+    one in a right-aligned column reads as a dash. `_signed` writes the
+    output a workflow parses, and that one keeps the ASCII sign.
+    """
+    if value is None:
+        return "–"
+
+    rounded = round(value, 2)
+    if rounded == 0:
+        return "±0"
+
+    return "%s%s%s" % ("+" if rounded > 0 else "−",
+                       _trim(abs(rounded)), suffix)
 
 
 def _suites_table(rows, limit):
@@ -755,6 +1117,177 @@ def _longest_run(text, char):
 
 
 # ---------------------------------------------------------------------------
+# annotations
+# ---------------------------------------------------------------------------
+
+# The tail of a pytest traceback: "tests/test_cart.py:15: RuntimeError". An
+# ERROR carries the whole traceback, so this finds the frame that raised. A
+# FAIL carries only the lines pytest prefixed with "E   ", which is why the
+# line number for one is looked up in the source instead.
+_FRAME = re.compile(r"^(?P<path>[^\s][^:]*\.py):(?P<line>\d+):", re.MULTILINE)
+
+# GitHub caps what one step may annotate. Ten of each kind is what it shows,
+# and an eleventh is dropped without a word, so the summary - which has no
+# such cap - is where the rest are.
+ANNOTATION_LIMIT = 10
+
+# An annotation is shown in a hover card and in the run's annotation list,
+# and neither is a place to read a long traceback. The report has all of it.
+ANNOTATION_MESSAGE_LIMIT = 900
+
+
+def annotate(run, comparison, options, roots):
+    """One annotation per failure, placed on the line the test is written at.
+
+    Errors for what failed, warnings for what was retried into a pass. New
+    failures are annotated first, because a limit that drops something
+    should drop the failure the base branch already had rather than the one
+    this change introduced.
+    """
+    limit = _limit(options.annotation_limit, ANNOTATION_LIMIT)
+    if limit <= 0:
+        return 0
+
+    new = set(test["identity"] for test in (comparison or {}).get("new_failures", []))
+
+    failures = sorted(run.failures(),
+                      key=lambda test: 0 if test["identity"] in new else 1)
+
+    written = 0
+    for test in failures[:limit]:
+        path, line = locate(test, roots)
+        label = "errored" if test["status"] == "ERROR" else "failed"
+        if test["identity"] in new:
+            label = "newly " + label
+
+        _annotation("error", test, "%s %s" % (test["test"], label), path, line)
+        written += 1
+
+    for test in run.flaky()[:limit]:
+        path, line = locate(test, roots)
+        _annotation("warning", test,
+                    "%s passed on retry %s×" % (test["test"], test["rerun"]),
+                    path, line,
+                    "Failed, was retried %s %s, and passed. The run is green "
+                    "and this test gave two answers to the same question in "
+                    "it." % (test["rerun"], _plural(test["rerun"], "time")))
+        written += 1
+
+    return written
+
+
+def _annotation(kind, test, title, path, line, message=None):
+    """One workflow command, with the parts GitHub reads escaped as it asks.
+
+    The message is somebody else's - a test wrote it, and on a fork's pull
+    request the tests are the fork author's - so every newline in it is
+    escaped, which leaves it as one line that cannot begin a command of its
+    own however it starts.
+    """
+    properties = [("title", "pytest-html-reporter: " + title)]
+    if path:
+        properties.append(("file", path))
+        if line:
+            properties.extend([("line", str(line)), ("col", "1")])
+
+    body = "%s\n\n%s" % (test["identity"],
+                         message or test["message"] or "No message was captured.")
+
+    sys.stdout.write("::%s %s::%s\n" % (
+        kind,
+        ",".join("%s=%s" % (name, _property(value)) for name, value in properties),
+        _oneline(_defang(body[:ANNOTATION_MESSAGE_LIMIT]))))
+
+
+def _property(value):
+    """A workflow command property, escaped the way GitHub reads them back."""
+    return (_oneline(value)
+            .replace(":", "%3A")
+            .replace(",", "%2C"))
+
+
+def locate(test, roots):
+    """(path, line) for a test, as a path GitHub can hang an annotation on.
+
+    The path has to be relative to the repository, because that is what a
+    diff is addressed by. A test whose file cannot be found under any root -
+    a suite name that is a node id from a plugin, a run whose rootdir is
+    outside the checkout - gets no path at all, and the annotation still
+    reaches the run's annotation list without pointing at the wrong file.
+
+    The last root is the checkout, by the way `_roots` builds them, and it is
+    what the path comes out relative to.
+    """
+    absolute = _source_file(test["suite"], roots)
+    if not absolute:
+        return "", None
+
+    workspace = roots[-1]
+    try:
+        path = os.path.relpath(absolute, workspace)
+    except ValueError:
+        # Windows, and the checkout is on another drive from the run.
+        return "", None
+
+    if path.startswith(".."):
+        # Outside the checkout, so no diff has a line for it to sit on.
+        return "", None
+
+    return normalise(path), _line_of(test, absolute)
+
+
+def _source_file(suite, roots):
+    """The file a suite names, found under the first root that holds it."""
+    name = normalise(str(suite or "").split("::", 1)[0].strip())
+    if not name or not name.endswith(".py"):
+        return ""
+
+    for root in roots:
+        candidate = os.path.join(root, name)
+        if os.path.isfile(candidate):
+            return os.path.abspath(candidate)
+
+    return ""
+
+
+def _line_of(test, path):
+    """The line to put the annotation on, or None to leave it on the file.
+
+    The traceback comes first: an ERROR carries one, and the frame it ends
+    at is where the run actually came apart - a fixture two files away, as
+    often as not. A FAIL carries only its assertion lines, so the test's own
+    `def` is the honest answer for it.
+    """
+    for match in reversed(list(_FRAME.finditer(test["message"] or ""))):
+        if os.path.basename(match.group("path")) == os.path.basename(path):
+            return int(match.group("line"))
+
+    return _def_line(path, test["test"])
+
+
+def _def_line(path, name):
+    """The line a test function is defined on, or None when it is not found."""
+    # A parametrised test is listed as "test_add[2-3]" and defined as
+    # "test_add"; a class's test is listed under its own name either way.
+    bare = str(name).split("[", 1)[0].strip()
+    if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", bare):
+        return None
+
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            text = handle.read()
+    except (IOError, OSError):
+        return None
+
+    found = re.search(r"^[ \t]*(?:async[ \t]+)?def[ \t]+%s[ \t]*\(" % re.escape(bare),
+                      text, re.MULTILINE)
+    if not found:
+        return None
+
+    return text.count("\n", 0, found.start()) + 1
+
+
+# ---------------------------------------------------------------------------
 # thresholds
 # ---------------------------------------------------------------------------
 
@@ -801,6 +1334,54 @@ def gate(run, exit_code, options):
 
 def _flag(value):
     return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _one_of(value, *allowed):
+    """A choice input, or the first choice when it is empty or unknown.
+
+    An unknown value is warned about rather than fatal: the action checks
+    its own choice inputs before pytest runs, so anything reaching here came
+    from a workflow calling this helper directly.
+    """
+    chosen = str(value or "").strip().lower()
+    if not chosen:
+        return allowed[0]
+
+    if chosen not in allowed:
+        warn("%r is not one of %s - reading it as %r."
+             % (value, ", ".join(allowed), allowed[0]))
+        return allowed[0]
+
+    return chosen
+
+
+def _signed(value):
+    """A delta, for a workflow to read. Empty when there is no number."""
+    if value is None:
+        return ""
+
+    rounded = round(value, 2)
+    return "%s%s" % ("+" if rounded > 0 else "", _trim(rounded))
+
+
+def _roots():
+    """Where a test file named in the report might be found on this runner.
+
+    The working directory first - the report's paths are relative to the
+    rootdir pytest ran in, which is at or below it - and the checkout after,
+    for a run whose report was written somewhere else entirely.
+
+    The checkout comes last on purpose: `locate` takes the last root as what
+    an annotation's path is relative to, which is what GitHub addresses a
+    diff by.
+    """
+    here = os.getcwd()
+    workspace = os.environ.get("GITHUB_WORKSPACE")
+
+    if not workspace or os.path.abspath(workspace) == os.path.abspath(here):
+        return [here]
+
+    return [here, workspace]
 
 
 def _optional_float(value, name):
@@ -1008,6 +1589,19 @@ def cmd_prime(options):
         with open(options.previous, "w", encoding="utf-8") as handle:
             handle.write(stamp)
 
+    # The build the cache restored is this run's predecessor on this branch,
+    # and it is about to be overwritten by the run itself. Kept aside here so
+    # the summary can say what changed between the two - which is the whole
+    # of the comparison on a push, where there is no base branch to fetch.
+    if options.baseline_out and os.path.isfile(restored):
+        try:
+            import shutil
+
+            shutil.copyfile(restored, options.baseline_out)
+        except (IOError, OSError) as error:
+            warn("the restored build could not be kept for comparison (%s); "
+                 "this run will be reported on its own." % error)
+
     report = os.path.join(directory, options.report_name)
     if os.path.isfile(restored) and not os.path.isfile(report):
         os.makedirs(directory, exist_ok=True)
@@ -1147,6 +1741,13 @@ def cmd_summarize(options):
     counts = run.counts
 
     wall = _optional_float(options.wall_clock, "wall-clock")
+
+    baseline = Run(None, "")
+    if _one_of(options.compare, "auto", "none") != "none":
+        baseline = load_baseline(options.baseline_json, options.baseline_zip)
+
+    comparison = compare(run, baseline) if (run.found and baseline.found) else None
+
     context = {
         "title": options.title,
         "report_dir": os.path.dirname(options.json),
@@ -1157,6 +1758,12 @@ def cmd_summarize(options):
         "artifact_url": options.artifact_url,
         "pages_url": options.pages_url,
         "run_url": options.run_url,
+        # Read out of the report rather than derived, so a link either goes
+        # to the row it names or is not offered at all.
+        "anchors": anchors(options.report_file) if options.pages_url else {},
+        "comparison": comparison,
+        "comparison_label": options.baseline_label,
+        "comparison_url": options.baseline_url,
     }
 
     markdown = render(run, context)
@@ -1176,7 +1783,21 @@ def cmd_summarize(options):
     write_output("coverage", "" if not run.coverage
                  else _trim(_float(run.coverage.get("percent"))))
     write_output("report-found", "true" if run.found else "false")
+    write_output("flaky", len(run.flaky()))
     write_output("summary", markdown)
+
+    # Empty rather than 0 when there was nothing to compare against: a
+    # workflow reading "0 new failures" would be told a comparison happened
+    # and found nothing, which is a different thing from no comparison.
+    write_output("baseline-found", "true" if comparison else "false")
+    write_output("new-failures", len(comparison["new_failures"]) if comparison else "")
+    write_output("fixed", len(comparison["fixed"]) if comparison else "")
+    write_output("still-failing", len(comparison["still_failing"]) if comparison else "")
+    write_output("pass-rate-delta", _signed(comparison["pass_rate"][2]) if comparison else "")
+    write_output("coverage-delta", _signed(comparison["coverage"][2]) if comparison else "")
+
+    if _flag(options.annotations):
+        annotate(run, comparison, options, _roots())
 
     if options.coverage_file and not run.coverage:
         warn("report-coverage-file was set to %r, and no coverage reached the "
@@ -1246,6 +1867,9 @@ def main(argv=None):
     prime.add_argument("--previous", default="",
                        help="where to record the restored build, so the "
                             "summary can tell it from this run's")
+    prime.add_argument("--baseline-out", default="",
+                       help="where to keep the restored build itself, so this "
+                            "run can be compared against the last one")
     prime.set_defaults(handler=cmd_prime)
 
     args = sub.add_parser("args", help="build the pytest argument list")
@@ -1282,6 +1906,20 @@ def main(argv=None):
                            help="a file cmd_prime wrote naming the build the "
                                 "cache restored, so it is not mistaken for "
                                 "this run's")
+    summarize.add_argument("--report-file", default="",
+                           help="the HTML report, read for the anchors its "
+                                "rows carry so the summary can link to them")
+    summarize.add_argument("--annotations", default="true")
+    summarize.add_argument("--annotation-limit", default=str(ANNOTATION_LIMIT))
+    summarize.add_argument("--compare", default="auto")
+    summarize.add_argument("--baseline-json", default="",
+                           help="an output.json to compare this run against")
+    summarize.add_argument("--baseline-zip", default="",
+                           help="a report artifact to take that output.json out of")
+    summarize.add_argument("--baseline-label", default="",
+                           help="what to call the baseline in the summary")
+    summarize.add_argument("--baseline-url", default="",
+                           help="where the baseline run can be read")
     summarize.set_defaults(handler=cmd_summarize)
 
     options = parser.parse_args(argv)

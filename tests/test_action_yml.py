@@ -203,6 +203,23 @@ def test_inputs_reach_bash_through_env_never_through_interpolation(steps):
                 % (step.get("name"), expression.strip()))
 
 
+def test_inputs_reach_github_script_through_env_too(steps):
+    """The same injection, in JavaScript rather than in bash.
+
+    `${{ inputs.title }}` spliced into a github-script body becomes source
+    the same way, and a title holding a quote ends the string it is in.
+    """
+    for step in steps:
+        script = (step.get("with") or {}).get("script")
+        if not script:
+            continue
+
+        for expression in re.findall(r"\$\{\{(.*?)\}\}", script, re.DOTALL):
+            assert "inputs." not in expression, (
+                "%r interpolates %s into its script - pass it through env: instead"
+                % (step.get("name"), expression.strip()))
+
+
 def test_the_action_only_calls_first_party_actions(steps):
     for step in steps:
         if "uses" not in step:

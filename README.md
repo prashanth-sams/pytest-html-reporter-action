@@ -8,7 +8,7 @@
 
 <p align="center">
   <a href="https://github.com/prashanth-sams/pytest-html-reporter-action/actions"><img alt="CI" src="https://github.com/prashanth-sams/pytest-html-reporter-action/actions/workflows/ci.yml/badge.svg"></a>
-  <a href="https://pypi.org/project/pytest-html-reporter/"><img alt="PyPI" src="https://badge.fury.io/py/pytest-html-reporter.svg"></a>
+  <a href="https://pypi.org/project/pytest-html-reporter/"><img alt="PyPI" src="https://badge.fury.io/py/pytest-html-reporter.svg?v=0.4.3"></a>
   <a href="LICENSE"><img alt="MIT" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
 </p>
 
@@ -44,6 +44,7 @@ whatever you want to do next.
   - [Fail on a threshold](#fail-on-a-threshold)
   - [A matrix](#a-matrix)
   - [Publish to GitHub Pages](#publish-to-github-pages)
+  - [Compare with the base branch](#compare-with-the-base-branch)
   - [Use the outputs](#use-the-outputs)
 - [Inputs](#inputs)
 - [Outputs](#outputs)
@@ -67,8 +68,19 @@ on every push rather than a new comment each time.
 **As an artifact** — the full interactive HTML report: Overview, Trends,
 Analytics, Test Steps, Archives, Screenshots, Attachments and Test Coverage.
 
-**As outputs** — `passed`, `failed`, `pass-rate`, `coverage`, `status` and a
-dozen more, so a later step can post to Slack, open an issue, or gate a deploy.
+**On the diff** — an annotation on the line each failing test is written at, so
+a reviewer sees what broke where they are already looking. Flaky tests — the
+ones that only passed on a retry — are annotated as warnings, because a green
+run that needed three attempts is not the same as one that did not.
+
+**Against the base branch** — what this change did to the suite, not just where
+it left it: which tests are newly failing, which it fixed, and how the pass rate
+and coverage moved. The baseline is the report this action already uploaded on
+the last successful run over there; nothing is stored anywhere for it.
+
+**As outputs** — `passed`, `failed`, `flaky`, `new-failures`, `pass-rate`,
+`coverage`, `status` and a dozen more, so a later step can post to Slack, open
+an issue, or gate a deploy.
 
 <br>
 
@@ -229,6 +241,61 @@ live inside the action. The action gets you as far as the Pages artifact:
 The deploy job is three more lines — see
 [examples/pages.yml](examples/pages.yml) for the whole workflow.
 
+### Compare with the base branch
+
+On by default, and it needs one permission to do anything: reading another
+run's artifacts is what `actions: read` grants.
+
+```yaml
+permissions:
+  contents: read
+  actions: read           # to fetch the base branch's report
+  pull-requests: write    # to comment
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: prashanth-sams/pytest-html-reporter-action@v1
+        with:
+          tests: tests/
+          comment: 'true'
+```
+
+The baseline is the artifact this action uploaded on the **last successful run
+of this same workflow** on the pull request's base branch. The summary then
+leads with what changed — newly failing tests, fixed ones, and how the pass rate
+and coverage moved — and each new failure is marked as new in the list below it.
+
+Nothing is stored for this and no service is called: the artifact already
+exists, and the API knows which run wrote it. When there is no such artifact —
+a first run, a new workflow, an expired retention window — the comparison is
+skipped and the rest of the summary is unchanged. Without `actions: read` the
+action says so once, as a warning, and carries on.
+
+With `history: 'true'` and no base branch to reach, the build the cache restored
+stands in, so a push to `main` is compared with the last push to `main`.
+
+To gate on it rather than only read it:
+
+```yaml
+- uses: prashanth-sams/pytest-html-reporter-action@v1
+  id: report
+  with:
+    tests: tests/
+    fail-on-error: 'false'
+
+- name: No new failures
+  if: steps.report.outputs.new-failures != '' && steps.report.outputs.new-failures != '0'
+  run: |
+    echo "::error::$NEW test(s) fail here that pass on the base branch"
+    exit 1
+  env:
+    NEW: ${{ steps.report.outputs.new-failures }}
+```
+
 ### Use the outputs
 
 ```yaml
@@ -315,7 +382,9 @@ whether or not you set it, for the reason in
 | `failure-limit` | `10` | Failures listed before the rest are counted instead. |
 | `suite-limit` | `20` | Suites listed in the summary table. |
 | `slowest-limit` | `5` | Slowest tests listed; `0` lists none. |
-| `report-url` | `''` | Link to the published report, shown in the summary and comment. |
+| `report-url` | `''` | Link to the published report, shown in the summary and comment. Set it and every failure becomes a link to its own row in the report. |
+| `annotations` | `true` | Mark failing lines on the diff, not only in the summary. |
+| `annotation-limit` | `10` | Annotations of each kind — errors for failures, warnings for flakes. GitHub shows ten of each per step and drops the rest silently. |
 | `comment` | `false` | Post the summary as a sticky pull request comment. |
 | `comment-mode` | `always` | `always`, or `on-failure`. |
 | `pr-number` | `''` | Pull request to comment on. Only needed when the event carries none — a `workflow_run` job, say. |
@@ -329,6 +398,15 @@ whether or not you set it, for the reason in
 | `pages-artifact` | `false` | Also upload a GitHub Pages artifact for a following deploy job. |
 | `history` | `false` | Carry `archive/` between runs with `actions/cache`. |
 | `history-key` | `pytest-html-reporter-history` | Cache key prefix for that history. |
+
+### Comparing with another build
+
+| Input | Default | Description |
+| --- | --- | --- |
+| `compare` | `auto` | `auto` compares this run with an earlier one; `none` skips it. |
+| `baseline-json` | `''` | An `output.json` to compare against, if you would rather fetch one yourself. Set, nothing is downloaded. |
+| `baseline-artifact` | `''` | Artifact to take the baseline out of. Empty uses `artifact-name`. |
+| `baseline-ref` | `''` | Branch whose last successful run is the baseline. Empty uses the pull request's base branch, or the default branch. |
 
 ### Gates
 
@@ -348,6 +426,7 @@ whether or not you set it, for the reason in
 | `status` | `FAIL` | `PASS`, `FAIL`, or `UNKNOWN` when no report was produced. |
 | `total` | `5` | Tests executed. Reruns are attempts, not tests, and are not counted here. |
 | `passed` `failed` `errors` `skipped` `xpassed` `xfailed` `rerun` | `2` | The individual counts. |
+| `flaky` | `1` | Tests that failed, were retried and then passed. Counted apart from the failures: the run is green, and these are why it nearly was not. |
 | `suites` | `2` | Test suites in the run. |
 | `pass-rate` | `50` | `passed / (passed + failed + errors)`, as a percentage. Empty when nothing decisive ran. |
 | `coverage` | `87.42` | Coverage percentage. Empty when the run produced none. |
@@ -359,6 +438,12 @@ whether or not you set it, for the reason in
 | `json-path` | `/…/report/output.json` | The run's machine-readable summary. |
 | `summary` | `## ❌ …` | The markdown summary, for reuse in a later step. |
 | `artifact-id` `artifact-url` | | From the artifact upload, when one happened. |
+| `baseline-found` | `true` | Whether a build was found to compare this run with. The five below are **empty** when it is `false` — a comparison that never happened is not one that found nothing. |
+| `new-failures` | `2` | Tests failing here that were not failing in the baseline. |
+| `fixed` | `1` | Tests failing in the baseline that pass here. |
+| `still-failing` | `3` | Tests failing in both. |
+| `pass-rate-delta` `coverage-delta` | `-4.2` | Percentage points each moved, signed. |
+| `baseline-url` | `https://…/runs/42` | The run the comparison was made against. |
 
 <br>
 
@@ -371,11 +456,16 @@ features you turn on need:
 permissions:
   contents: read        # always
   pull-requests: write  # for `comment: 'true'`
+  actions: read         # to compare with the base branch
 ```
 
 Since 2023 the default `GITHUB_TOKEN` is read-only, so a missing
 `pull-requests: write` is the usual reason a comment does not appear. The
 action warns rather than failing when it cannot post.
+
+`actions: read` is what lets the action fetch the base branch's report to
+compare against. Without it the comparison is skipped with a warning — set
+`compare: 'none'` to skip it deliberately and silently.
 
 Pages deployment needs `pages: write` and `id-token: write` — on the *deploy*
 job, not this one. See [examples/pages.yml](examples/pages.yml).
