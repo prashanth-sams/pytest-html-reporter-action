@@ -29,7 +29,7 @@ jobs:
     name: build the report
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       # The failing flavour: three passes, a failure, an error and a skip. A
       # demo that is green all the way down says nothing about what the report

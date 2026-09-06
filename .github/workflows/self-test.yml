@@ -194,7 +194,7 @@ jobs:
     name: a run is compared with the build before it
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - shell: bash
         run: bash tests/fixtures/make-project.sh baseline pass
