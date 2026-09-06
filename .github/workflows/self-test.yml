@@ -21,7 +21,7 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Build a small project to point the action at
         shell: bash
@@ -80,7 +80,7 @@ jobs:
     name: a failing run is reported, not swallowed
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - shell: bash
         run: bash tests/fixtures/make-project.sh sample fail
@@ -129,7 +129,7 @@ jobs:
     name: a threshold fails a run that pytest called green
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - shell: bash
         run: bash tests/fixtures/make-project.sh sample pass
@@ -159,7 +159,7 @@ jobs:
     name: a second run sees the first one
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - shell: bash
         run: bash tests/fixtures/make-project.sh sample pass
