@@ -8,7 +8,7 @@
 
 <p align="center">
   <a href="https://github.com/prashanth-sams/pytest-html-reporter-action/actions"><img alt="CI" src="https://github.com/prashanth-sams/pytest-html-reporter-action/actions/workflows/ci.yml/badge.svg"></a>
-  <a href="https://pypi.org/project/pytest-html-reporter/"><img alt="PyPI" src="https://badge.fury.io/py/pytest-html-reporter.svg"></a>
+  <a href="https://pypi.org/project/pytest-html-reporter/"><img alt="PyPI" src="https://badge.fury.io/py/pytest-html-reporter.svg?v=0.4.3"></a>
   <a href="LICENSE"><img alt="MIT" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
 </p>
 
