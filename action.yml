@@ -730,7 +730,7 @@ runs:
     - name: Find a build to compare against
       id: baseline
       if: inputs.compare != 'none' && inputs.baseline-json == ''
-      uses: actions/github-script@v7
+      uses: actions/github-script@v9
       with:
         github-token: ${{ inputs.github-token }}
         script: |
