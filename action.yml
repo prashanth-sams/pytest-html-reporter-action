@@ -715,7 +715,7 @@ runs:
 
     - name: Upload the report as a Pages artifact
       if: inputs.pages-artifact == 'true'
-      uses: actions/upload-pages-artifact@v3
+      uses: actions/upload-pages-artifact@v5
       with:
         path: ${{ steps.resolve.outputs.report-dir }}
 
